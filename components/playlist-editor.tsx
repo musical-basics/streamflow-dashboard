@@ -75,25 +75,49 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
       const basename = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9]/g, '_')
       const filename = `${basename}_${Date.now()}.${ext}`
 
-      console.log('Uploading to Supabase dropzone:', filename)
+      console.log('Getting signed upload URL for:', filename)
 
-      // Step 1: Upload to Supabase Storage (dropzone bucket)
-      // Using Supabase JS SDK for proper authentication
-      setUploadProgress(10) // Show initial progress
+      // Step 1: Get a signed upload URL from our API (uses service role key server-side)
+      const signedUrlRes = await fetch('/api/create-upload-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename })
+      })
 
-      const { error: uploadError } = await supabase.storage
-        .from('dropzone')
-        .upload(filename, file, {
-          cacheControl: '3600',
-          upsert: true
-        })
-
-      if (uploadError) {
-        console.error('Supabase upload error:', uploadError)
-        throw new Error(uploadError.message)
+      if (!signedUrlRes.ok) {
+        const errData = await signedUrlRes.json().catch(() => ({}))
+        throw new Error(errData.error || 'Failed to get upload URL')
       }
 
-      setUploadProgress(90)
+      const { signedUrl } = await signedUrlRes.json()
+      console.log('Got signed URL, uploading file...')
+
+      // Step 2: Upload to Supabase using the signed URL with XHR for progress
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100)
+            setUploadProgress(percent)
+          }
+        })
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve()
+          } else {
+            reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`))
+          }
+        })
+
+        xhr.addEventListener('error', () => reject(new Error('Upload failed')))
+        xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')))
+
+        xhr.open('PUT', signedUrl)
+        xhr.setRequestHeader('Content-Type', file.type)
+        xhr.send(file)
+      })
 
       console.log('Supabase upload complete, notifying VPS...')
       setUploadStage('processing')
