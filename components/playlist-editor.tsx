@@ -243,19 +243,26 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
 
               {/* Thumbnail */}
               <div className="w-20 h-12 rounded bg-secondary flex items-center justify-center flex-shrink-0 overflow-hidden">
-                {video.thumbnail ? (
-                  <img
-                    src={video.thumbnail.startsWith('http') || video.thumbnail.startsWith('/')
-                      ? video.thumbnail
-                      : `/api/proxy/thumbnails/${video.thumbnail}`}
-                    alt={video.title}
-                    className="w-full h-full object-cover"
-                    onError={(e) => {
-                      // Hide broken image, show video icon instead
-                      e.currentTarget.style.display = 'none'
-                    }}
-                  />
-                ) : (
+                {video.thumbnail ? (() => {
+                  // Convert VPS URLs to use the proxy to avoid mixed content
+                  let thumbnailSrc = video.thumbnail
+                  if (thumbnailSrc.startsWith('http://62.146.175.144:3000')) {
+                    thumbnailSrc = thumbnailSrc.replace('http://62.146.175.144:3000', '/api/proxy')
+                  } else if (!thumbnailSrc.startsWith('http') && !thumbnailSrc.startsWith('/')) {
+                    thumbnailSrc = `/api/proxy/thumbnails/${thumbnailSrc}`
+                  }
+                  return (
+                    <img
+                      src={thumbnailSrc}
+                      alt={video.title}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        // Hide broken image, show video icon instead
+                        e.currentTarget.style.display = 'none'
+                      }}
+                    />
+                  )
+                })() : (
                   <Video className="w-5 h-5 text-muted-foreground" />
                 )}
               </div>
