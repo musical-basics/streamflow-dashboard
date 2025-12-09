@@ -756,9 +756,20 @@ function startStream(config) {
   currentPlaylist = playlist;
   streamStartTime = Date.now(); // Unix timestamp for time-based tracking
 
-  console.log('🎬 Starting stream to:', rtmp_url);
-  console.log('📋 Playlist items:', playlist.length);
+  console.log('');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('🎬 STARTING STREAM');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('📡 RTMP URL:', rtmp_url);
   console.log('🔊 Audio overlay:', audio_overlay_enabled ? `${audio_volume}%` : 'disabled');
+  console.log('📊 Bitrate:', bitrate || 8000, 'kbps');
+  console.log('');
+  console.log('📋 PLAYLIST (' + playlist.length + ' videos):');
+  playlist.forEach((video, i) => {
+    console.log(`   ${i + 1}. ${video.title || video.filename} (${video.duration || 'unknown'})`);
+  });
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('');
 
   // Build FFmpeg arguments
   let ffmpegArgs = [
@@ -874,20 +885,29 @@ function stopStream() {
 }
 
 /**
- * Check if config has changed significantly (excluding playlist)
- * Note: We don't restart on playlist changes - those require manual restart
+ * Check if config has changed significantly
+ * Now includes playlist changes to auto-restart when playlist is updated
  */
 function configChanged(oldConfig, newConfig) {
   if (!oldConfig) return false;
 
-  // Only restart on audio/bitrate changes, NOT playlist changes
-  // Playlist changes require manual stop/start to take effect
-  return (
+  const playlistChanged = JSON.stringify(oldConfig.playlist) !== JSON.stringify(newConfig.playlist);
+  const settingsChanged = (
     oldConfig.audio_volume !== newConfig.audio_volume ||
     oldConfig.audio_overlay_enabled !== newConfig.audio_overlay_enabled ||
     oldConfig.bitrate !== newConfig.bitrate
-    // Removed: JSON.stringify(oldConfig.playlist) !== JSON.stringify(newConfig.playlist)
   );
+
+  if (playlistChanged) {
+    console.log('🔄 Playlist changed - will restart stream');
+    console.log('📋 Old playlist:', oldConfig.playlist?.length || 0, 'videos');
+    console.log('📋 New playlist:', newConfig.playlist?.length || 0, 'videos');
+  }
+  if (settingsChanged) {
+    console.log('🔄 Stream settings changed - will restart stream');
+  }
+
+  return playlistChanged || settingsChanged;
 }
 
 /**
