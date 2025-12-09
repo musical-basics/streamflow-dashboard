@@ -518,10 +518,24 @@ app.get('/stream/status', (req, res) => {
 });
 
 /**
- * Get currently playing video info
+ * Parse duration string (e.g., "3:45" or "1:23:45") to seconds
+ */
+function parseDurationToSeconds(duration) {
+  if (!duration) return 0;
+  const parts = duration.split(':').map(Number);
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  } else if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  return 0;
+}
+
+/**
+ * Get currently playing video info based on elapsed time
  */
 app.get('/now-playing', (req, res) => {
-  if (!isStreaming || currentPlaylist.length === 0) {
+  if (!isStreaming || currentPlaylist.length === 0 || !streamStartTime) {
     return res.json({
       current: null,
       next: null,
@@ -531,11 +545,41 @@ app.get('/now-playing', (req, res) => {
     });
   }
 
-  const safeIndex = currentVideoIndex % currentPlaylist.length;
-  const nextIndex = (safeIndex + 1) % currentPlaylist.length;
+  // Calculate elapsed seconds since stream started
+  const elapsedMs = Date.now() - streamStartTime;
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
 
-  const current = currentPlaylist[safeIndex] || null;
-  const next = currentPlaylist[nextIndex] || null;
+  // Calculate total playlist duration
+  const durations = currentPlaylist.map(item => parseDurationToSeconds(item.duration));
+  const totalDuration = durations.reduce((sum, d) => sum + d, 0);
+
+  if (totalDuration === 0) {
+    // Fallback if no duration data
+    return res.json({
+      current: currentPlaylist[0] || null,
+      next: currentPlaylist[1] || null,
+      index: 0,
+      total: currentPlaylist.length,
+      isStreaming: true
+    });
+  }
+
+  // Find which video is currently playing based on elapsed time (with looping)
+  let timeInLoop = elapsedSeconds % totalDuration;
+  let currentIndex = 0;
+  let cumulativeTime = 0;
+
+  for (let i = 0; i < currentPlaylist.length; i++) {
+    cumulativeTime += durations[i];
+    if (timeInLoop < cumulativeTime) {
+      currentIndex = i;
+      break;
+    }
+  }
+
+  const nextIndex = (currentIndex + 1) % currentPlaylist.length;
+  const current = currentPlaylist[currentIndex];
+  const next = currentPlaylist[nextIndex];
 
   res.json({
     current: current ? {
@@ -552,10 +596,10 @@ app.get('/now-playing', (req, res) => {
       duration: next.duration,
       filename: next.filename
     } : null,
-    index: safeIndex,
+    index: currentIndex,
     total: currentPlaylist.length,
     isStreaming: true,
-    startedAt: currentVideoStartTime
+    elapsedSeconds
   });
 });
 
@@ -570,8 +614,7 @@ let lastConfig = null;
 
 // Now Playing tracking
 let currentPlaylist = [];
-let currentVideoIndex = 0;
-let currentVideoStartTime = null;
+let streamStartTime = null; // Timestamp when stream started
 
 /**
  * Fetch stream configuration from Supabase
@@ -711,8 +754,7 @@ function startStream(config) {
 
   // Track current playlist for now-playing feature
   currentPlaylist = playlist;
-  currentVideoIndex = 0;
-  currentVideoStartTime = new Date().toISOString();
+  streamStartTime = Date.now(); // Unix timestamp for time-based tracking
 
   console.log('🎬 Starting stream to:', rtmp_url);
   console.log('📋 Playlist items:', playlist.length);
@@ -789,25 +831,6 @@ function startStream(config) {
 
   ffmpegProcess.stderr.on('data', (data) => {
     const line = data.toString();
-
-    // Detect when concat demuxer opens a new file
-    // FFmpeg logs: "Opening 'path/to/video.mp4' for reading"
-    if (line.includes("Opening '") && line.includes("' for reading")) {
-      const match = line.match(/Opening '([^']+)' for reading/);
-      if (match && match[1]) {
-        const openedFile = match[1];
-        // Find which playlist index this file corresponds to
-        const foundIndex = currentPlaylist.findIndex(item => {
-          const filename = item.filename;
-          return filename && openedFile.includes(filename);
-        });
-        if (foundIndex !== -1) {
-          currentVideoIndex = foundIndex;
-          currentVideoStartTime = new Date().toISOString();
-          console.log(`🎵 Now playing: ${currentPlaylist[foundIndex]?.title || 'Unknown'} (${foundIndex + 1}/${currentPlaylist.length})`);
-        }
-      }
-    }
 
     if (line.includes('frame=') && line.includes('fps=')) {
       // Log progress occasionally
