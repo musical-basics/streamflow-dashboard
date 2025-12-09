@@ -70,7 +70,7 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
     setUploadStage('uploading')
 
     // Direct VPS upload
-    const VPS_URL = 'http://62.146.175.144:3000'
+    const VPS_URL = 'https://stream.musicalbasics.com'
 
     try {
       const formData = new FormData()
@@ -257,8 +257,8 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
                 {video.thumbnail ? (() => {
                   // Convert VPS URLs to use the proxy to avoid mixed content
                   let thumbnailSrc = video.thumbnail
-                  if (thumbnailSrc.startsWith('http://62.146.175.144:3000')) {
-                    thumbnailSrc = thumbnailSrc.replace('http://62.146.175.144:3000', '/api/proxy')
+                  if (thumbnailSrc.startsWith('https://stream.musicalbasics.com')) {
+                    thumbnailSrc = thumbnailSrc.replace('https://stream.musicalbasics.com', '/api/proxy')
                   } else if (!thumbnailSrc.startsWith('http') && !thumbnailSrc.startsWith('/')) {
                     thumbnailSrc = `/api/proxy/thumbnails/${thumbnailSrc}`
                   }

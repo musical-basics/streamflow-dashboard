@@ -6,9 +6,8 @@ const nextConfig = {
   images: {
     remotePatterns: [
       {
-        protocol: 'http',
-        hostname: '62.146.175.144',
-        port: '3000',
+        protocol: 'https',
+        hostname: 'stream.musicalbasics.com',
         pathname: '/thumbnails/**',
       },
     ],
@@ -17,7 +16,7 @@ const nextConfig = {
     return [
       {
         source: '/api/proxy/:path*',
-        destination: 'http://62.146.175.144:3000/:path*',
+        destination: 'https://stream.musicalbasics.com/:path*',
       },
     ]
   },

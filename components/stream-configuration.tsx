@@ -50,7 +50,7 @@ function AudioOverlayCard({
     setUploadProgress(0)
 
     // VPS URL for direct upload (bypasses Vercel proxy to avoid timeout/size limits)
-    const VPS_URL = 'http://62.146.175.144:3000'
+    const VPS_URL = 'https://stream.musicalbasics.com'
 
     try {
       const formData = new FormData()
