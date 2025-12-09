@@ -259,7 +259,14 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
                   let thumbnailSrc = video.thumbnail
                   if (thumbnailSrc.startsWith('https://stream.musicalbasics.com')) {
                     thumbnailSrc = thumbnailSrc.replace('https://stream.musicalbasics.com', '/api/proxy')
+                  } else if (thumbnailSrc.startsWith('http://62.146.175.144:3000')) {
+                    // Handle old HTTP URLs
+                    thumbnailSrc = thumbnailSrc.replace('http://62.146.175.144:3000', '/api/proxy')
+                  } else if (thumbnailSrc.startsWith('/thumbnails/')) {
+                    // Handle relative paths like /thumbnails/filename.jpg
+                    thumbnailSrc = `/api/proxy${thumbnailSrc}`
                   } else if (!thumbnailSrc.startsWith('http') && !thumbnailSrc.startsWith('/')) {
+                    // Handle bare filenames
                     thumbnailSrc = `/api/proxy/thumbnails/${thumbnailSrc}`
                   }
                   return (
