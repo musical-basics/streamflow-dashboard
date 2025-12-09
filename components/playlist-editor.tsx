@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Video, Trash2, Upload, GripVertical, Loader2 } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
+import { supabase } from "@/lib/supabase"
 
 export interface VideoItem {
   id: string
@@ -29,6 +30,7 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadStage, setUploadStage] = useState<'uploading' | 'processing'>('uploading')
   const [isDragOver, setIsDragOver] = useState(false)
 
 
@@ -65,18 +67,19 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
 
     setIsUploading(true)
     setUploadProgress(0)
-
-    // VPS URL for direct upload (bypasses Vercel proxy to avoid timeout/size limits)
-    const VPS_URL = 'http://62.146.175.144:3000'
+    setUploadStage('uploading')
 
     try {
-      const formData = new FormData()
-      formData.append('video', file)
+      // Generate unique filename for dropzone
+      const ext = file.name.split('.').pop() || 'mp4'
+      const basename = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9]/g, '_')
+      const filename = `${basename}_${Date.now()}.${ext}`
 
-      console.log('Uploading to:', `${VPS_URL}/upload`)
+      console.log('Uploading to Supabase dropzone:', filename)
 
-      // Use XMLHttpRequest for progress tracking
-      const data = await new Promise<any>((resolve, reject) => {
+      // Step 1: Upload to Supabase Storage (dropzone bucket)
+      // Use XMLHttpRequest for progress tracking since supabase-js doesn't support it well
+      const { error: uploadError } = await new Promise<{ error: Error | null }>((resolve) => {
         const xhr = new XMLHttpRequest()
 
         xhr.upload.addEventListener('progress', (event) => {
@@ -86,37 +89,61 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
           }
         })
 
-        xhr.addEventListener('load', () => {
+        xhr.addEventListener('load', async () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText))
-            } catch {
-              reject(new Error('Invalid response'))
-            }
+            resolve({ error: null })
           } else {
-            try {
-              const errorData = JSON.parse(xhr.responseText)
-              reject(new Error(errorData.error || 'Upload failed'))
-            } catch {
-              reject(new Error('Upload failed'))
-            }
+            resolve({ error: new Error(`Upload failed: ${xhr.statusText}`) })
           }
         })
 
-        xhr.addEventListener('error', () => reject(new Error('Upload failed')))
-        xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')))
+        xhr.addEventListener('error', () => {
+          resolve({ error: new Error('Upload failed') })
+        })
 
-        xhr.open('POST', `${VPS_URL}/upload`)
-        xhr.send(formData)
+        // Upload directly to Supabase Storage REST API
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+        const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+        const uploadUrl = `${supabaseUrl}/storage/v1/object/dropzone/${filename}`
+
+        xhr.open('POST', uploadUrl)
+        xhr.setRequestHeader('Authorization', `Bearer ${supabaseAnonKey}`)
+        xhr.setRequestHeader('Content-Type', file.type)
+        xhr.send(file)
       })
+
+      if (uploadError) {
+        throw uploadError
+      }
+
+      console.log('Supabase upload complete, notifying VPS...')
+      setUploadStage('processing')
+      setUploadProgress(100)
+
+      // Step 2: Tell VPS to download and process the file
+      const response = await fetch('/api/proxy/upload-from-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename,
+          originalName: file.name
+        })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || 'VPS processing failed')
+      }
+
+      const data = await response.json()
 
       const newVideo: VideoItem = {
         id: data.id,
         title: data.title,
         duration: data.duration,
-        // Store full VPS URL - will be converted to proxy path when displayed
-        thumbnail: data.thumbnail ? `${VPS_URL}${data.thumbnail}` : '',
-        url: data.url ? `${VPS_URL}${data.url}` : undefined,
+        // VPS returns paths like /thumbnails/... - convert to proxy paths
+        thumbnail: data.thumbnail ? `/api/proxy${data.thumbnail}` : '',
+        url: data.url ? `/api/proxy${data.url}` : undefined,
         filename: data.filename,
       }
 
@@ -137,12 +164,13 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
       console.error('Upload error:', error)
       toast({
         title: "Upload Failed",
-        description: "Failed to upload video. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to upload video. Please try again.",
         variant: "destructive"
       })
     } finally {
       setIsUploading(false)
       setUploadProgress(0)
+      setUploadStage('uploading')
     }
   }
 
@@ -205,14 +233,18 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
           </div>
           {isUploading ? (
             <div className="w-full px-4">
-              <p className="text-sm font-medium text-foreground mb-2 text-center">Uploading... {uploadProgress}%</p>
+              <p className="text-sm font-medium text-foreground mb-2 text-center">
+                {uploadStage === 'uploading' ? `Uploading... ${uploadProgress}%` : 'Processing video...'}
+              </p>
               <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
                 <div
-                  className="h-full bg-primary transition-all duration-300 ease-out"
+                  className={`h-full transition-all duration-300 ease-out ${uploadStage === 'processing' ? 'bg-green-500 animate-pulse' : 'bg-primary'}`}
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>
-              <p className="text-xs text-muted-foreground mt-2 text-center">Please wait</p>
+              <p className="text-xs text-muted-foreground mt-2 text-center">
+                {uploadStage === 'uploading' ? 'Uploading to cloud storage' : 'Generating thumbnail...'}
+              </p>
             </div>
           ) : (
             <>

@@ -270,6 +270,117 @@ app.post('/upload', upload.single('video'), async (req, res) => {
 });
 
 /**
+ * Upload from Supabase Dropzone Endpoint
+ * Downloads a file from Supabase storage and processes it locally
+ */
+app.post('/upload-from-url', async (req, res) => {
+  try {
+    const { filename, originalName } = req.body;
+
+    if (!filename) {
+      return res.status(400).json({ error: 'Missing filename' });
+    }
+
+    console.log(`📥 Downloading from Supabase dropzone: ${filename}`);
+
+    // Construct the public URL for the file in dropzone bucket
+    const publicUrl = `${supabaseUrl}/storage/v1/object/public/dropzone/${filename}`;
+    console.log(`🔗 Fetching from: ${publicUrl}`);
+
+    // Download the file
+    const response = await fetch(publicUrl);
+
+    if (!response.ok) {
+      console.error(`❌ Failed to download: ${response.status} ${response.statusText}`);
+      return res.status(400).json({ error: `Failed to download file: ${response.statusText}` });
+    }
+
+    // Save to local videos directory
+    const localFilename = filename;
+    const filePath = path.join(VIDEOS_DIR, localFilename);
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    fs.writeFileSync(filePath, buffer);
+
+    const size = buffer.length;
+    console.log(`💾 Saved to: ${filePath} (${formatFileSize(size)})`);
+
+    // Get video duration
+    let duration = '0:00';
+    try {
+      duration = await getVideoDuration(filePath);
+      console.log(`⏱️ Duration: ${duration}`);
+    } catch (err) {
+      console.error('Could not get duration:', err.message);
+    }
+
+    // Generate thumbnail
+    const thumbnailFilename = localFilename.replace(/\.[^/.]+$/, '.jpg');
+    const thumbnailPath = path.join(THUMBNAILS_DIR, thumbnailFilename);
+
+    try {
+      await generateThumbnail(filePath, thumbnailPath);
+    } catch (err) {
+      console.error('Thumbnail generation failed, using placeholder');
+    }
+
+    // Derive title from original filename or the dropzone filename
+    const titleSource = originalName || filename;
+    const title = path.basename(titleSource, path.extname(titleSource))
+      .replace(/[-_]/g, ' ')
+      .replace(/_\d+$/, ''); // Remove timestamp suffix
+
+    // Insert into Supabase videos table
+    const videoData = {
+      filename: localFilename,
+      title,
+      duration,
+      size: formatFileSize(size),
+      thumbnail_url: `/thumbnails/${thumbnailFilename}`,
+    };
+
+    const { data, error } = await supabase
+      .from('videos')
+      .insert(videoData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('❌ Supabase insert error:', error.message);
+      return res.status(500).json({ error: 'Failed to save video metadata' });
+    }
+
+    console.log(`✅ Upload from URL complete: ${localFilename}`);
+
+    // Optionally delete from dropzone to free up space
+    // (uncomment if you want automatic cleanup)
+    // try {
+    //   await supabase.storage.from('dropzone').remove([filename]);
+    //   console.log(`🗑️ Cleaned up dropzone: ${filename}`);
+    // } catch (cleanupErr) {
+    //   console.error('Cleanup failed:', cleanupErr.message);
+    // }
+
+    // Return the new video object
+    res.json({
+      id: data.id,
+      filename: data.filename,
+      title: data.title,
+      duration: data.duration,
+      size: data.size,
+      thumbnail: data.thumbnail_url,
+      url: `/videos/${localFilename}`,
+      created_at: data.created_at
+    });
+
+  } catch (error) {
+    console.error('❌ Upload from URL error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Upload Audio Endpoint (for background audio/rain sounds)
  */
 const audioUpload = multer({
