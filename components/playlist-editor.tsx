@@ -69,31 +69,17 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
     setUploadProgress(0)
     setUploadStage('uploading')
 
+    // Direct VPS upload
+    const VPS_URL = 'http://62.146.175.144:3000'
+
     try {
-      // Generate unique filename for dropzone
-      const ext = file.name.split('.').pop() || 'mp4'
-      const basename = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9]/g, '_')
-      const filename = `${basename}_${Date.now()}.${ext}`
+      const formData = new FormData()
+      formData.append('video', file)
 
-      console.log('Getting signed upload URL for:', filename)
+      console.log('Uploading directly to VPS:', `${VPS_URL}/upload`)
 
-      // Step 1: Get a signed upload URL from our API (uses service role key server-side)
-      const signedUrlRes = await fetch('/api/create-upload-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename })
-      })
-
-      if (!signedUrlRes.ok) {
-        const errData = await signedUrlRes.json().catch(() => ({}))
-        throw new Error(errData.error || 'Failed to get upload URL')
-      }
-
-      const { signedUrl } = await signedUrlRes.json()
-      console.log('Got signed URL, uploading file...')
-
-      // Step 2: Upload to Supabase using the signed URL with XHR for progress
-      await new Promise<void>((resolve, reject) => {
+      // Use XMLHttpRequest for progress tracking
+      const data = await new Promise<any>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
 
         xhr.upload.addEventListener('progress', (event) => {
@@ -105,48 +91,34 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
 
         xhr.addEventListener('load', () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            resolve()
+            try {
+              resolve(JSON.parse(xhr.responseText))
+            } catch {
+              reject(new Error('Invalid response'))
+            }
           } else {
-            reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`))
+            try {
+              const errorData = JSON.parse(xhr.responseText)
+              reject(new Error(errorData.error || 'Upload failed'))
+            } catch {
+              reject(new Error('Upload failed'))
+            }
           }
         })
 
-        xhr.addEventListener('error', () => reject(new Error('Upload failed')))
+        xhr.addEventListener('error', () => reject(new Error('Upload failed - check if VPS is accessible')))
         xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')))
 
-        xhr.open('PUT', signedUrl)
-        xhr.setRequestHeader('Content-Type', file.type)
-        xhr.send(file)
+        xhr.open('POST', `${VPS_URL}/upload`)
+        xhr.send(formData)
       })
-
-      console.log('Supabase upload complete, notifying VPS...')
-      setUploadStage('processing')
-      setUploadProgress(100)
-
-      // Step 2: Tell VPS to download and process the file
-      const response = await fetch('/api/proxy/upload-from-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename,
-          originalName: file.name
-        })
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error || 'VPS processing failed')
-      }
-
-      const data = await response.json()
 
       const newVideo: VideoItem = {
         id: data.id,
         title: data.title,
         duration: data.duration,
-        // VPS returns paths like /thumbnails/... - convert to proxy paths
-        thumbnail: data.thumbnail ? `/api/proxy${data.thumbnail}` : '',
-        url: data.url ? `/api/proxy${data.url}` : undefined,
+        thumbnail: data.thumbnail ? `${VPS_URL}${data.thumbnail}` : '',
+        url: data.url ? `${VPS_URL}${data.url}` : undefined,
         filename: data.filename,
       }
 
