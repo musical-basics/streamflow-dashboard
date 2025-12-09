@@ -74,7 +74,7 @@ export function NowPlaying({ isLive }: NowPlayingProps) {
     }
 
     return (
-        <div className="flex gap-3 mb-4">
+        <div className="flex flex-col md:flex-row gap-3 mb-4">
             {/* Now Playing Card */}
             <Card className="p-3 flex-1 bg-gradient-to-r from-red-500/10 to-transparent border-red-500/20">
                 <div className="flex items-center gap-3">
