@@ -66,11 +66,14 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
     setIsUploading(true)
     setUploadProgress(0)
 
+    // VPS URL for direct upload (bypasses Vercel proxy to avoid timeout/size limits)
+    const VPS_URL = 'http://62.146.175.144:3000'
+
     try {
       const formData = new FormData()
       formData.append('video', file)
 
-      console.log('Uploading to:', '/api/proxy/upload')
+      console.log('Uploading to:', `${VPS_URL}/upload`)
 
       // Use XMLHttpRequest for progress tracking
       const data = await new Promise<any>((resolve, reject) => {
@@ -103,7 +106,7 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
         xhr.addEventListener('error', () => reject(new Error('Upload failed')))
         xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')))
 
-        xhr.open('POST', '/api/proxy/upload')
+        xhr.open('POST', `${VPS_URL}/upload`)
         xhr.send(formData)
       })
 
@@ -111,8 +114,9 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
         id: data.id,
         title: data.title,
         duration: data.duration,
-        thumbnail: data.thumbnail ? `/api/proxy${data.thumbnail}` : '',
-        url: data.url ? `/api/proxy${data.url}` : undefined,
+        // Store full VPS URL - will be converted to proxy path when displayed
+        thumbnail: data.thumbnail ? `${VPS_URL}${data.thumbnail}` : '',
+        url: data.url ? `${VPS_URL}${data.url}` : undefined,
         filename: data.filename,
       }
 

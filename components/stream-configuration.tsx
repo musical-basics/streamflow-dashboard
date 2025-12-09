@@ -49,6 +49,9 @@ function AudioOverlayCard({
     setIsUploading(true)
     setUploadProgress(0)
 
+    // VPS URL for direct upload (bypasses Vercel proxy to avoid timeout/size limits)
+    const VPS_URL = 'http://62.146.175.144:3000'
+
     try {
       const formData = new FormData()
       formData.append('audio', file)
@@ -85,7 +88,7 @@ function AudioOverlayCard({
         xhr.addEventListener('error', () => reject(new Error('Upload failed')))
         xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')))
 
-        xhr.open('POST', '/api/proxy/upload-audio')
+        xhr.open('POST', `${VPS_URL}/upload-audio`)
         xhr.send(formData)
       })
     } catch (error) {
