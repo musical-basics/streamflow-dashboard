@@ -108,6 +108,35 @@ export default function Dashboard() {
         description: error.message,
         variant: "destructive"
       })
+      return
+    }
+
+    // If stream is live, restart it to apply playlist changes
+    if (isLive) {
+      toast({
+        title: "Restarting Stream",
+        description: "Applying playlist changes..."
+      })
+
+      // Stop stream
+      await supabase
+        .from('stream_config')
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq('id', configId)
+
+      // Wait for VPS to stop the stream
+      await new Promise(resolve => setTimeout(resolve, 3000))
+
+      // Start stream again with new playlist
+      await supabase
+        .from('stream_config')
+        .update({ is_active: true, updated_at: new Date().toISOString() })
+        .eq('id', configId)
+
+      toast({
+        title: "Stream Restarted",
+        description: "Playlist changes are now live!"
+      })
     } else {
       toast({
         title: "Success",
