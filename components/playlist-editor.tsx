@@ -78,43 +78,22 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpload }: Playli
       console.log('Uploading to Supabase dropzone:', filename)
 
       // Step 1: Upload to Supabase Storage (dropzone bucket)
-      // Use XMLHttpRequest for progress tracking since supabase-js doesn't support it well
-      const { error: uploadError } = await new Promise<{ error: Error | null }>((resolve) => {
-        const xhr = new XMLHttpRequest()
+      // Using Supabase JS SDK for proper authentication
+      setUploadProgress(10) // Show initial progress
 
-        xhr.upload.addEventListener('progress', (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 100)
-            setUploadProgress(percent)
-          }
+      const { error: uploadError } = await supabase.storage
+        .from('dropzone')
+        .upload(filename, file, {
+          cacheControl: '3600',
+          upsert: true
         })
-
-        xhr.addEventListener('load', async () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve({ error: null })
-          } else {
-            resolve({ error: new Error(`Upload failed: ${xhr.statusText}`) })
-          }
-        })
-
-        xhr.addEventListener('error', () => {
-          resolve({ error: new Error('Upload failed') })
-        })
-
-        // Upload directly to Supabase Storage REST API
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-        const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-        const uploadUrl = `${supabaseUrl}/storage/v1/object/dropzone/${filename}`
-
-        xhr.open('POST', uploadUrl)
-        xhr.setRequestHeader('Authorization', `Bearer ${supabaseAnonKey}`)
-        xhr.setRequestHeader('Content-Type', file.type)
-        xhr.send(file)
-      })
 
       if (uploadError) {
-        throw uploadError
+        console.error('Supabase upload error:', uploadError)
+        throw new Error(uploadError.message)
       }
+
+      setUploadProgress(90)
 
       console.log('Supabase upload complete, notifying VPS...')
       setUploadStage('processing')
