@@ -5,6 +5,7 @@ import { Sidebar } from "@/components/sidebar"
 import { Header } from "@/components/header"
 import { PlaylistEditor, type VideoItem } from "@/components/playlist-editor"
 import { StreamConfiguration } from "@/components/stream-configuration"
+import { NowPlaying } from "@/components/now-playing"
 import { supabase } from "@/lib/supabase"
 import { toast } from "@/hooks/use-toast"
 
@@ -199,6 +200,7 @@ export default function Dashboard() {
         <main className="flex-1 flex overflow-hidden">
           {/* Left Panel - Playlist Editor */}
           <div className="w-1/2 border-r border-border p-6 overflow-hidden flex flex-col">
+            <NowPlaying isLive={isLive} />
             <PlaylistEditor videos={videos} onReorder={handleReorder} onDelete={handleDelete} onUpload={handleUpload} />
           </div>
 

@@ -517,6 +517,48 @@ app.get('/stream/status', (req, res) => {
   });
 });
 
+/**
+ * Get currently playing video info
+ */
+app.get('/now-playing', (req, res) => {
+  if (!isStreaming || currentPlaylist.length === 0) {
+    return res.json({
+      current: null,
+      next: null,
+      index: 0,
+      total: 0,
+      isStreaming: false
+    });
+  }
+
+  const safeIndex = currentVideoIndex % currentPlaylist.length;
+  const nextIndex = (safeIndex + 1) % currentPlaylist.length;
+
+  const current = currentPlaylist[safeIndex] || null;
+  const next = currentPlaylist[nextIndex] || null;
+
+  res.json({
+    current: current ? {
+      id: current.id,
+      title: current.title,
+      thumbnail: current.thumbnail || current.thumbnail_url,
+      duration: current.duration,
+      filename: current.filename
+    } : null,
+    next: next ? {
+      id: next.id,
+      title: next.title,
+      thumbnail: next.thumbnail || next.thumbnail_url,
+      duration: next.duration,
+      filename: next.filename
+    } : null,
+    index: safeIndex,
+    total: currentPlaylist.length,
+    isStreaming: true,
+    startedAt: currentVideoStartTime
+  });
+});
+
 // =============================================================================
 // BROADCAST ENGINE
 // =============================================================================
@@ -525,6 +567,11 @@ let ffmpegProcess = null;
 let isStreaming = false;
 let currentConfigId = null;
 let lastConfig = null;
+
+// Now Playing tracking
+let currentPlaylist = [];
+let currentVideoIndex = 0;
+let currentVideoStartTime = null;
 
 /**
  * Fetch stream configuration from Supabase
@@ -662,6 +709,11 @@ function startStream(config) {
   const vBitrate = bitrate || 8000;
   const audioMixWeight = audio_overlay_enabled ? (audio_volume || 35) / 100 : 0;
 
+  // Track current playlist for now-playing feature
+  currentPlaylist = playlist;
+  currentVideoIndex = 0;
+  currentVideoStartTime = new Date().toISOString();
+
   console.log('🎬 Starting stream to:', rtmp_url);
   console.log('📋 Playlist items:', playlist.length);
   console.log('🔊 Audio overlay:', audio_overlay_enabled ? `${audio_volume}%` : 'disabled');
@@ -737,6 +789,26 @@ function startStream(config) {
 
   ffmpegProcess.stderr.on('data', (data) => {
     const line = data.toString();
+
+    // Detect when concat demuxer opens a new file
+    // FFmpeg logs: "Opening 'path/to/video.mp4' for reading"
+    if (line.includes("Opening '") && line.includes("' for reading")) {
+      const match = line.match(/Opening '([^']+)' for reading/);
+      if (match && match[1]) {
+        const openedFile = match[1];
+        // Find which playlist index this file corresponds to
+        const foundIndex = currentPlaylist.findIndex(item => {
+          const filename = item.filename;
+          return filename && openedFile.includes(filename);
+        });
+        if (foundIndex !== -1) {
+          currentVideoIndex = foundIndex;
+          currentVideoStartTime = new Date().toISOString();
+          console.log(`🎵 Now playing: ${currentPlaylist[foundIndex]?.title || 'Unknown'} (${foundIndex + 1}/${currentPlaylist.length})`);
+        }
+      }
+    }
+
     if (line.includes('frame=') && line.includes('fps=')) {
       // Log progress occasionally
       if (Math.random() < 0.01) {
