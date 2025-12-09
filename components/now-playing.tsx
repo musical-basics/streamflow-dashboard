@@ -74,41 +74,41 @@ export function NowPlaying({ isLive }: NowPlayingProps) {
     }
 
     return (
-        <Card className="p-4 mb-4 bg-gradient-to-r from-primary/10 to-transparent border-primary/20">
-            <div className="flex items-center gap-6">
-                {/* Now Playing */}
-                <div className="flex items-center gap-3 flex-1">
-                    <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                        <span className="text-xs font-medium text-red-400 uppercase tracking-wide">Now Playing</span>
+        <div className="flex gap-3 mb-4">
+            {/* Now Playing Card */}
+            <Card className="p-3 flex-1 bg-gradient-to-r from-red-500/10 to-transparent border-red-500/20">
+                <div className="flex items-center gap-3">
+                    <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
+                    <div className="w-16 h-10 rounded bg-secondary overflow-hidden flex-shrink-0">
+                        {data.current?.thumbnail ? (
+                            <img
+                                src={getThumbnailSrc(data.current.thumbnail) || undefined}
+                                alt={data.current.title}
+                                className="w-full h-full object-cover"
+                            />
+                        ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                                <Video className="w-4 h-4 text-muted-foreground" />
+                            </div>
+                        )}
                     </div>
-                    <div className="flex items-center gap-3">
-                        <div className="w-16 h-10 rounded bg-secondary overflow-hidden flex-shrink-0">
-                            {data.current?.thumbnail ? (
-                                <img
-                                    src={getThumbnailSrc(data.current.thumbnail) || undefined}
-                                    alt={data.current.title}
-                                    className="w-full h-full object-cover"
-                                />
-                            ) : (
-                                <div className="w-full h-full flex items-center justify-center">
-                                    <Video className="w-4 h-4 text-muted-foreground" />
-                                </div>
-                            )}
-                        </div>
-                        <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{data.current?.title || 'Unknown'}</p>
-                            <p className="text-xs text-muted-foreground">{data.current?.duration || '--:--'}</p>
-                        </div>
+                    <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-red-400 uppercase tracking-wide mb-0.5">Now Playing</p>
+                        <p className="text-sm font-medium truncate">{data.current?.title || 'Unknown'}</p>
+                        <p className="text-xs text-muted-foreground">{data.current?.duration || '--:--'}</p>
+                    </div>
+                    <div className="text-xs text-muted-foreground flex-shrink-0">
+                        {data.index + 1}/{data.total}
                     </div>
                 </div>
+            </Card>
 
-                {/* Up Next */}
-                {data.next && (
-                    <div className="flex items-center gap-3 opacity-70">
-                        <SkipForward className="w-4 h-4 text-muted-foreground" />
-                        <span className="text-xs text-muted-foreground">Up next:</span>
-                        <div className="w-12 h-8 rounded bg-secondary overflow-hidden flex-shrink-0">
+            {/* Up Next Card */}
+            {data.next && (
+                <Card className="p-3 flex-1 bg-gradient-to-r from-primary/5 to-transparent border-border/50">
+                    <div className="flex items-center gap-3">
+                        <SkipForward className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                        <div className="w-16 h-10 rounded bg-secondary overflow-hidden flex-shrink-0">
                             {data.next.thumbnail ? (
                                 <img
                                     src={getThumbnailSrc(data.next.thumbnail) || undefined}
@@ -117,19 +117,18 @@ export function NowPlaying({ isLive }: NowPlayingProps) {
                                 />
                             ) : (
                                 <div className="w-full h-full flex items-center justify-center">
-                                    <Video className="w-3 h-3 text-muted-foreground" />
+                                    <Video className="w-4 h-4 text-muted-foreground" />
                                 </div>
                             )}
                         </div>
-                        <p className="text-sm text-muted-foreground truncate max-w-[150px]">{data.next.title}</p>
+                        <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-0.5">Up Next</p>
+                            <p className="text-sm font-medium truncate">{data.next.title}</p>
+                            <p className="text-xs text-muted-foreground">{data.next.duration}</p>
+                        </div>
                     </div>
-                )}
-
-                {/* Progress indicator */}
-                <div className="text-xs text-muted-foreground">
-                    {data.index + 1} / {data.total}
-                </div>
-            </div>
-        </Card>
+                </Card>
+            )}
+        </div>
     )
 }
