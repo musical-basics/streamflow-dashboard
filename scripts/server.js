@@ -58,7 +58,8 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 // =============================================================================
 
 // Ensure directories exist
-[VIDEOS_DIR, THUMBNAILS_DIR].forEach(dir => {
+const TEMP_DIR = path.join(__dirname, '../public/temp');
+[VIDEOS_DIR, THUMBNAILS_DIR, TEMP_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
     console.log(`📁 Created directory: ${dir}`);
@@ -95,7 +96,7 @@ app.use('/thumbnails', express.static(THUMBNAILS_DIR));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, VIDEOS_DIR);
+    cb(null, TEMP_DIR); // Save to temp dir, normalize later
   },
   filename: (req, file, cb) => {
     // Generate unique filename with timestamp
@@ -173,6 +174,53 @@ function generateThumbnail(videoPath, thumbnailPath) {
 }
 
 /**
+ * Normalize video to consistent format for concat demuxer
+ * Target: 1920x1080, 30fps, H.264, AAC 44.1kHz stereo, MP4
+ */
+function normalizeVideo(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    console.log(`🔄 Normalizing video: ${path.basename(inputPath)}`);
+    console.log(`   → Target: 1080p30fps H.264/AAC MP4`);
+
+    ffmpeg(inputPath)
+      // Video: Scale to 1080p with padding to maintain aspect ratio
+      .videoCodec('libx264')
+      .outputOptions([
+        '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
+        '-r', '30',           // 30fps constant
+        '-preset', 'veryfast', // Fast encoding
+        '-crf', '23',         // Good quality
+        '-pix_fmt', 'yuv420p' // Compatibility
+      ])
+      // Audio: AAC 44.1kHz stereo
+      .audioCodec('aac')
+      .audioFrequency(44100)
+      .audioChannels(2)
+      .audioBitrate('128k')
+      // Output format
+      .format('mp4')
+      .outputOptions('-movflags', '+faststart') // Web-friendly
+      .on('start', (cmd) => {
+        console.log(`   FFmpeg command: ${cmd.substring(0, 100)}...`);
+      })
+      .on('progress', (progress) => {
+        if (progress.percent) {
+          process.stdout.write(`\r   Progress: ${Math.round(progress.percent)}%`);
+        }
+      })
+      .on('end', () => {
+        console.log(`\n✅ Normalization complete: ${path.basename(outputPath)}`);
+        resolve(outputPath);
+      })
+      .on('error', (err) => {
+        console.error(`\n❌ Normalization failed: ${err.message}`);
+        reject(err);
+      })
+      .save(outputPath);
+  });
+}
+
+/**
  * Format file size
  */
 function formatFileSize(bytes) {
@@ -207,34 +255,62 @@ app.post('/upload', upload.single('video'), async (req, res) => {
       return res.status(400).json({ error: 'No video file provided' });
     }
 
-    const { filename, originalname, path: filePath, size } = req.file;
-    console.log(`📤 Received upload: ${originalname}`);
+    const { originalname, path: tempFilePath, size } = req.file;
+    console.log(`📤 Received upload: ${originalname} (${formatFileSize(size)})`);
 
-    // Get video duration
+    // Generate normalized filename (always .mp4)
+    const baseName = path.basename(originalname, path.extname(originalname))
+      .replace(/[^a-zA-Z0-9_-]/g, '_');
+    const timestamp = Date.now();
+    const normalizedFilename = `${baseName}_${timestamp}.mp4`;
+    const normalizedPath = path.join(VIDEOS_DIR, normalizedFilename);
+
+    // Step 1: Normalize video to 1080p30fps H.264/AAC
+    console.log('🎬 Starting normalization...');
+    try {
+      await normalizeVideo(tempFilePath, normalizedPath);
+    } catch (err) {
+      console.error('❌ Normalization failed:', err.message);
+      // Clean up temp file
+      fs.unlink(tempFilePath, () => { });
+      return res.status(500).json({ error: 'Video normalization failed: ' + err.message });
+    }
+
+    // Step 2: Delete temp file
+    fs.unlink(tempFilePath, (err) => {
+      if (err) console.error('Could not delete temp file:', err.message);
+      else console.log('🗑️ Temp file deleted');
+    });
+
+    // Step 3: Get duration from normalized video
     let duration = '0:00';
     try {
-      duration = await getVideoDuration(filePath);
+      duration = await getVideoDuration(normalizedPath);
       console.log(`⏱️ Duration: ${duration}`);
     } catch (err) {
       console.error('Could not get duration:', err.message);
     }
 
-    // Generate thumbnail
-    const thumbnailFilename = filename.replace(/\.[^/.]+$/, '.jpg');
+    // Step 4: Generate thumbnail from normalized video
+    const thumbnailFilename = normalizedFilename.replace(/\.mp4$/, '.jpg');
     const thumbnailPath = path.join(THUMBNAILS_DIR, thumbnailFilename);
 
     try {
-      await generateThumbnail(filePath, thumbnailPath);
+      await generateThumbnail(normalizedPath, thumbnailPath);
     } catch (err) {
       console.error('Thumbnail generation failed, using placeholder');
     }
 
-    // Insert into Supabase videos table
+    // Step 5: Get file size of normalized video
+    const normalizedStats = fs.statSync(normalizedPath);
+    const normalizedSize = formatFileSize(normalizedStats.size);
+
+    // Step 6: Insert into Supabase
     const videoData = {
-      filename,
-      title: path.basename(originalname, path.extname(originalname)).replace(/[-_]/g, ' '),
+      filename: normalizedFilename,
+      title: baseName.replace(/[-_]/g, ' '),
       duration,
-      size: formatFileSize(size),
+      size: normalizedSize,
       thumbnail_url: `/thumbnails/${thumbnailFilename}`,
     };
 
@@ -249,9 +325,8 @@ app.post('/upload', upload.single('video'), async (req, res) => {
       return res.status(500).json({ error: 'Failed to save video metadata' });
     }
 
-    console.log(`✅ Upload complete: ${filename}`);
+    console.log(`✅ Upload complete: ${normalizedFilename}`);
 
-    // Return the new video object
     res.json({
       id: data.id,
       filename: data.filename,
@@ -259,7 +334,7 @@ app.post('/upload', upload.single('video'), async (req, res) => {
       duration: data.duration,
       size: data.size,
       thumbnail: data.thumbnail_url,
-      url: `/videos/${filename}`,
+      url: `/videos/${normalizedFilename}`,
       created_at: data.created_at
     });
 
