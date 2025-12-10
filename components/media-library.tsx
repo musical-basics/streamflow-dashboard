@@ -20,7 +20,7 @@ interface Video {
 function getThumbnailUrl(filename: string) {
   // Remove file extension and add .jpg for thumbnail
   const thumbName = filename.replace(/\.[^/.]+$/, '.jpg')
-  return `/api/proxy/thumbnails/${thumbName}`
+  return `https://stream.musicalbasics.com/thumbnails/${thumbName}`
 }
 
 function getSupabaseClient() {
