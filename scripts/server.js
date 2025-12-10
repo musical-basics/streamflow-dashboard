@@ -58,7 +58,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 // =============================================================================
 
 // Ensure directories exist
-const TEMP_DIR = path.join(__dirname, '../public/temp');
+const TEMP_DIR = path.join(__dirname, 'public', 'temp');
 [VIDEOS_DIR, THUMBNAILS_DIR, TEMP_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
