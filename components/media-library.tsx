@@ -57,51 +57,60 @@ export function MediaLibrary() {
     setIsUploading(true)
 
     for (const file of fileArray) {
-      const formData = new FormData()
-      formData.append("file", file)
-
       try {
-        // Step 1: Upload to VPS
         setUploadProgress((prev) => ({ ...prev, [file.name]: 0 }))
 
-        const response = await fetch(`${process.env.NEXT_PUBLIC_VPS_API_URL}/upload`, {
-          method: "POST",
-          body: formData,
+        // Use XMLHttpRequest for upload progress
+        const result = await new Promise<any>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          const formData = new FormData()
+          formData.append('video', file)
+
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+              const percentComplete = Math.round((e.loaded / e.total) * 100)
+              setUploadProgress((prev) => ({ ...prev, [file.name]: percentComplete }))
+            }
+          })
+
+          xhr.addEventListener('load', () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                resolve(JSON.parse(xhr.responseText))
+              } catch {
+                resolve({})
+              }
+            } else {
+              reject(new Error(`Upload failed: ${xhr.statusText}`))
+            }
+          })
+
+          xhr.addEventListener('error', () => reject(new Error('Network error')))
+
+          // Use proxy route to VPS
+          xhr.open('POST', 'https://stream.musicalbasics.com/upload')
+          xhr.send(formData)
         })
 
-        if (!response.ok) {
-          throw new Error(`Upload failed: ${response.statusText}`)
-        }
-
-        const result = await response.json()
-        setUploadProgress((prev) => ({ ...prev, [file.name]: 100 }))
-
-        // Step 2: Save metadata to Supabase
+        // The VPS already saves to Supabase, just refresh the list
         const supabase = getSupabaseClient()
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from("videos")
-          .insert({
-            filename: result.filename || file.name,
-            title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension for title
-            duration: result.duration || "0:00:00",
-            size: formatFileSize(file.size),
-          })
-          .select()
-          .single()
+          .select("*")
+          .order("created_at", { ascending: false })
 
-        if (error) {
-          console.error("Error saving to Supabase:", error)
-        } else if (data) {
-          setVideos((prev) => [data, ...prev])
+        if (data) {
+          setVideos(data)
         }
+
+        setUploadProgress((prev) => ({ ...prev, [file.name]: 100 }))
       } catch (error) {
         console.error("Upload error:", error)
-        setUploadProgress((prev) => ({ ...prev, [file.name]: -1 })) // -1 indicates error
+        setUploadProgress((prev) => ({ ...prev, [file.name]: -1 }))
       }
     }
 
     setIsUploading(false)
-    // Clear progress after a delay
     setTimeout(() => {
       setUploadProgress({})
       setShowUploadModal(false)
