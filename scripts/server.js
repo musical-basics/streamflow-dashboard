@@ -843,6 +843,17 @@ function startStream(config) {
   ffmpegProcess.stderr.on('data', (data) => {
     const line = data.toString();
 
+    // Detect file switches from concat demuxer
+    // FFmpeg logs: [concat @ 0x...] Opening '/path/to/video.mp4' for reading
+    if (line.includes('Opening ')) {
+      const match = line.match(/Opening '([^']+)'/);
+      if (match && match[1]) {
+        const fullPath = match[1];
+        const filename = fullPath.split('/').pop();
+        console.log('🎵 NOW PLAYING:', filename);
+      }
+    }
+
     if (line.includes('frame=') && line.includes('fps=')) {
       // Log progress occasionally
       if (Math.random() < 0.01) {
