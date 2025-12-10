@@ -5,7 +5,7 @@ import type React from "react"
 import { useState, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Upload, Search, Grid, List, MoreVertical, Play, Clock, Film, X, Loader2 } from "lucide-react"
+import { Upload, Search, Grid, List, MoreVertical, Play, Clock, Film, X, Loader2, Trash2 } from "lucide-react"
 import { createBrowserClient } from "@supabase/ssr"
 
 interface Video {
@@ -18,7 +18,9 @@ interface Video {
 }
 
 function getThumbnailUrl(filename: string) {
-  return `${process.env.NEXT_PUBLIC_VPS_API_URL}/thumbnails/${filename}.jpg`
+  // Remove file extension and add .jpg for thumbnail
+  const thumbName = filename.replace(/\.[^/.]+$/, '.jpg')
+  return `/api/proxy/thumbnails/${thumbName}`
 }
 
 function getSupabaseClient() {
@@ -138,6 +140,29 @@ export function MediaLibrary() {
 
   const filteredMedia = videos.filter((item) => item.title.toLowerCase().includes(searchQuery.toLowerCase()))
 
+  const handleDelete = async (video: Video) => {
+    if (!confirm(`Delete "${video.title}"? This will permanently remove the file.`)) {
+      return
+    }
+
+    try {
+      // Delete from VPS
+      const response = await fetch(`/api/proxy/videos/${video.id}`, {
+        method: 'DELETE',
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to delete from VPS')
+      }
+
+      // Remove from local state
+      setVideos((prev) => prev.filter((v) => v.id !== video.id))
+    } catch (error) {
+      console.error('Error deleting video:', error)
+      alert('Failed to delete video. Please try again.')
+    }
+  }
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
       month: "short",
@@ -164,9 +189,8 @@ export function MediaLibrary() {
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-                isDragging ? "border-violet-500 bg-violet-500/10" : "border-border hover:border-violet-500/50"
-              }`}
+              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${isDragging ? "border-violet-500 bg-violet-500/10" : "border-border hover:border-violet-500/50"
+                }`}
             >
               <Upload className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
               <p className="text-foreground mb-2">Drag and drop your files here</p>
@@ -196,9 +220,8 @@ export function MediaLibrary() {
                     </div>
                     <div className="w-full bg-background rounded-full h-2">
                       <div
-                        className={`h-2 rounded-full transition-all ${
-                          progress === -1 ? "bg-red-500" : "bg-violet-600"
-                        }`}
+                        className={`h-2 rounded-full transition-all ${progress === -1 ? "bg-red-500" : "bg-violet-600"
+                          }`}
                         style={{ width: `${Math.max(0, progress)}%` }}
                       />
                     </div>
@@ -234,17 +257,15 @@ export function MediaLibrary() {
         <div className="flex items-center gap-1 bg-secondary rounded-lg p-1">
           <button
             onClick={() => setViewMode("grid")}
-            className={`p-2 rounded-md transition-colors ${
-              viewMode === "grid" ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-foreground"
-            }`}
+            className={`p-2 rounded-md transition-colors ${viewMode === "grid" ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-foreground"
+              }`}
           >
             <Grid className="w-4 h-4" />
           </button>
           <button
             onClick={() => setViewMode("list")}
-            className={`p-2 rounded-md transition-colors ${
-              viewMode === "list" ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-foreground"
-            }`}
+            className={`p-2 rounded-md transition-colors ${viewMode === "list" ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-foreground"
+              }`}
           >
             <List className="w-4 h-4" />
           </button>
@@ -294,8 +315,12 @@ export function MediaLibrary() {
                       <span>{formatDate(item.created_at)}</span>
                     </div>
                   </div>
-                  <button className="p-1 hover:bg-secondary rounded">
-                    <MoreVertical className="w-4 h-4 text-muted-foreground" />
+                  <button
+                    onClick={() => handleDelete(item)}
+                    className="p-1 hover:bg-red-500/10 hover:text-red-500 rounded transition-colors"
+                    title="Delete video"
+                  >
+                    <Trash2 className="w-4 h-4 text-muted-foreground hover:text-red-500" />
                   </button>
                 </div>
               </div>
@@ -339,8 +364,12 @@ export function MediaLibrary() {
                   <td className="p-4 text-sm text-muted-foreground">{item.size}</td>
                   <td className="p-4 text-sm text-muted-foreground">{formatDate(item.created_at)}</td>
                   <td className="p-4">
-                    <button className="p-1 hover:bg-secondary rounded">
-                      <MoreVertical className="w-4 h-4 text-muted-foreground" />
+                    <button
+                      onClick={() => handleDelete(item)}
+                      className="p-1 hover:bg-red-500/10 hover:text-red-500 rounded transition-colors"
+                      title="Delete video"
+                    >
+                      <Trash2 className="w-4 h-4 text-muted-foreground hover:text-red-500" />
                     </button>
                   </td>
                 </tr>

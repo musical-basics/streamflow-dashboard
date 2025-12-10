@@ -65,14 +65,9 @@ export default function Dashboard() {
     setVideos(videos.filter((v) => v.id !== id))
   }
 
-  const handleUpload = (video: VideoItem) => {
-    console.log('handleUpload called with:', video)
-    setVideos((prevVideos) => {
-      console.log('Previous videos:', prevVideos)
-      const newVideos = [...prevVideos, video]
-      console.log('New videos:', newVideos)
-      return newVideos
-    })
+  const handleAddVideos = (newVideos: VideoItem[]) => {
+    console.log('Adding videos from library:', newVideos)
+    setVideos((prevVideos) => [...prevVideos, ...newVideos])
   }
 
   const handlePublish = async () => {
@@ -230,7 +225,7 @@ export default function Dashboard() {
           {/* Left Panel - Playlist Editor */}
           <div className="w-1/2 border-r border-border p-6 overflow-hidden flex flex-col">
             <NowPlaying isLive={isLive} />
-            <PlaylistEditor videos={videos} onReorder={handleReorder} onDelete={handleDelete} onUpload={handleUpload} />
+            <PlaylistEditor videos={videos} onReorder={handleReorder} onDelete={handleDelete} onAddVideos={handleAddVideos} />
           </div>
 
           {/* Right Panel - Stream Configuration */}

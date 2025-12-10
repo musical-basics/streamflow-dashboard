@@ -841,26 +841,33 @@ function startStream(config) {
   });
 
   ffmpegProcess.stderr.on('data', (data) => {
-    const line = data.toString();
+    // Convert buffer to string and split by lines to handle chunks correctly
+    const outputLines = data.toString().split('\n');
 
-    // Detect file switches from concat demuxer
-    // FFmpeg logs: [concat @ 0x...] Opening '/path/to/video.mp4' for reading
-    if (line.includes('Opening ')) {
-      const match = line.match(/Opening '([^']+)'/);
-      if (match && match[1]) {
-        const fullPath = match[1];
-        const filename = fullPath.split('/').pop();
-        console.log('🎵 NOW PLAYING:', filename);
-      }
-    }
+    for (const line of outputLines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
 
-    if (line.includes('frame=') && line.includes('fps=')) {
-      // Log progress occasionally
-      if (Math.random() < 0.01) {
-        console.log('📡 Streaming:', line.trim());
+      // 1. Filter out the spammy progress bar
+      if (trimmed.includes('frame=') && trimmed.includes('fps=')) {
+        // Do nothing (hides the spam)
+        continue;
       }
-    } else if (line.toLowerCase().includes('error')) {
-      console.error('FFmpeg:', line.trim());
+
+      // 2. Log EVERYTHING else so we can see the "Opening" message format
+      console.log(`[FFMPEG] ${trimmed}`);
+
+      // 3. Try to catch the now playing (standard format)
+      if (trimmed.includes("Opening '")) {
+        try {
+          // Extract filename between single quotes
+          const match = trimmed.match(/'([^']+)'/);
+          if (match && match[1]) {
+            const filename = match[1].split('/').pop();
+            console.log(`🎵 NOW PLAYING: ${filename}`);
+          }
+        } catch (e) { /* ignore parse errors */ }
+      }
     }
   });
 
