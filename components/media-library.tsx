@@ -34,8 +34,17 @@ export function MediaLibrary() {
   const [isLoading, setIsLoading] = useState(true)
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState<{ [key: string]: number }>({})
+  const [uploadQueue, setUploadQueue] = useState<{
+    id: string
+    file: File
+    status: 'pending' | 'uploading' | 'completed' | 'error'
+    progress: number
+  }[]>([])
   const [isUploading, setIsUploading] = useState(false)
+
+  // Auto-refresh when queue is empty and was previously uploading?
+  // Actually, we can just refresh after individual uploads or at the end.
+  // We'll keep it simple and refresh the list after each successful upload to show immediate feedback.
 
   useEffect(() => {
     async function fetchVideos() {
@@ -52,24 +61,28 @@ export function MediaLibrary() {
     fetchVideos()
   }, [])
 
-  const handleFileUpload = useCallback(async (files: FileList | File[]) => {
-    const fileArray = Array.from(files)
+  const processQueue = useCallback(async (queue: typeof uploadQueue) => {
     setIsUploading(true)
+    let hasUpdates = false
 
-    for (const file of fileArray) {
+    for (let i = 0; i < queue.length; i++) {
+      const item = queue[i]
+      if (item.status === 'completed') continue
+
+      // Update status to uploading directly in the state
+      setUploadQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'uploading', progress: 0 } : q))
+
       try {
-        setUploadProgress((prev) => ({ ...prev, [file.name]: 0 }))
-
         // Use XMLHttpRequest for upload progress
-        const result = await new Promise<any>((resolve, reject) => {
+        await new Promise<any>((resolve, reject) => {
           const xhr = new XMLHttpRequest()
           const formData = new FormData()
-          formData.append('video', file)
+          formData.append('video', item.file)
 
           xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
               const percentComplete = Math.round((e.loaded / e.total) * 100)
-              setUploadProgress((prev) => ({ ...prev, [file.name]: percentComplete }))
+              setUploadQueue(prev => prev.map((q, idx) => idx === i ? { ...q, progress: percentComplete } : q))
             }
           })
 
@@ -92,7 +105,11 @@ export function MediaLibrary() {
           xhr.send(formData)
         })
 
-        // The VPS already saves to Supabase, just refresh the list
+        // Mark as completed
+        setUploadQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'completed', progress: 100 } : q))
+        hasUpdates = true
+
+        // Refresh list immediately after this file is done
         const supabase = getSupabaseClient()
         const { data } = await supabase
           .from("videos")
@@ -103,19 +120,54 @@ export function MediaLibrary() {
           setVideos(data)
         }
 
-        setUploadProgress((prev) => ({ ...prev, [file.name]: 100 }))
       } catch (error) {
         console.error("Upload error:", error)
-        setUploadProgress((prev) => ({ ...prev, [file.name]: -1 }))
+        setUploadQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'error', progress: 0 } : q))
       }
     }
 
     setIsUploading(false)
-    setTimeout(() => {
-      setUploadProgress({})
-      setShowUploadModal(false)
-    }, 2000)
+
+    // Auto close only if all completed successfully? Or just leave it open for user to close.
+    // User asked: "when the upload finishes, it should just automatically refresh the page so we can see that the video is in the media library"
+    // We already refreshed the list. Let's close modal if all succeeded after a short delay.
+
+    // Check if we should close (all completed)
+    setUploadQueue(currentQueue => {
+      const allCompleted = currentQueue.every(item => item.status === 'completed')
+      if (allCompleted) {
+        setTimeout(() => {
+          setShowUploadModal(false)
+          setUploadQueue([])
+        }, 1000)
+      }
+      return currentQueue // return unchecked, effect will strictly trigger on state change but we are inside callback
+      // Actually, we can't reliably check the *current* state inside here without refs or function update patterns heavily.
+      // But since we are awaiting the loop, we are effectively at the end.
+    })
+
   }, [])
+
+
+  const handleFileUpload = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files)
+
+    if (fileArray.length > 20) {
+      alert("You can only upload up to 20 videos at a time.")
+      return
+    }
+
+    const newQueue = fileArray.map(file => ({
+      id: Math.random().toString(36).substring(7),
+      file,
+      status: 'pending' as const,
+      progress: 0
+    }))
+
+    setUploadQueue(newQueue)
+    processQueue(newQueue)
+
+  }, [processQueue])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -185,59 +237,80 @@ export function MediaLibrary() {
       {/* Upload Modal */}
       {showUploadModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-card border border-border rounded-lg w-full max-w-lg p-6">
+          <div className="bg-card border border-border rounded-lg w-full max-w-lg p-6 max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-foreground">Upload Media</h2>
-              <button onClick={() => setShowUploadModal(false)} className="p-1 hover:bg-secondary rounded">
+              <button
+                onClick={() => {
+                  if (isUploading) {
+                    if (!confirm("Uploads are in progress. Are you sure you want to cancel?")) return
+                  }
+                  setShowUploadModal(false)
+                  setUploadQueue([])
+                }}
+                className="p-1 hover:bg-secondary rounded"
+              >
                 <X className="w-5 h-5 text-muted-foreground" />
               </button>
             </div>
 
-            {/* Drop Zone */}
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${isDragging ? "border-violet-500 bg-violet-500/10" : "border-border hover:border-violet-500/50"
-                }`}
-            >
-              <Upload className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-foreground mb-2">Drag and drop your files here</p>
-              <p className="text-sm text-muted-foreground mb-4">or</p>
-              <label>
-                <input type="file" multiple accept="video/*" onChange={handleFileSelect} className="hidden" />
-                <span className="inline-block px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg cursor-pointer transition-colors">
-                  Browse Files
-                </span>
-              </label>
-            </div>
-
-            {/* Upload Progress */}
-            {Object.keys(uploadProgress).length > 0 && (
-              <div className="mt-4 space-y-2">
-                {Object.entries(uploadProgress).map(([filename, progress]) => (
-                  <div key={filename} className="bg-secondary rounded-lg p-3">
+            {/* Drop Zone - Hide if queue has items */}
+            {uploadQueue.length === 0 ? (
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${isDragging ? "border-violet-500 bg-violet-500/10" : "border-border hover:border-violet-500/50"
+                  }`}
+              >
+                <Upload className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-foreground mb-2">Drag and drop your files here</p>
+                <p className="text-sm text-muted-foreground mb-4">or</p>
+                <label>
+                  <input type="file" multiple accept="video/*" onChange={handleFileSelect} className="hidden" />
+                  <span className="inline-block px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg cursor-pointer transition-colors">
+                    Browse Files
+                  </span>
+                </label>
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-2 pr-2">
+                <p className="text-sm text-muted-foreground mb-2">
+                  Processing {uploadQueue.filter(i => i.status === 'completed').length} of {uploadQueue.length} files...
+                </p>
+                {uploadQueue.map((item) => (
+                  <div key={item.id} className="bg-secondary rounded-lg p-3">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-foreground truncate">{filename}</span>
-                      {progress === -1 ? (
-                        <span className="text-sm text-red-500">Failed</span>
-                      ) : progress === 100 ? (
-                        <span className="text-sm text-green-500">Complete</span>
-                      ) : (
-                        <Loader2 className="w-4 h-4 animate-spin text-violet-500" />
-                      )}
+                      <div className="flex items-center gap-2 truncate flex-1 mr-4">
+                        {item.status === 'completed' ? (
+                          <Film className="w-4 h-4 text-green-500 flex-shrink-0" />
+                        ) : item.status === 'error' ? (
+                          <X className="w-4 h-4 text-red-500 flex-shrink-0" />
+                        ) : (
+                          <Loader2 className={`w-4 h-4 text-violet-500 flex-shrink-0 ${item.status === 'uploading' ? 'animate-spin' : ''}`} />
+                        )}
+                        <span className="text-sm text-foreground truncate" title={item.file.name}>{item.file.name}</span>
+                      </div>
+
+                      <span className="text-xs font-mono text-muted-foreground w-12 text-right">
+                        {item.status === 'pending' ? 'Wait' : item.status === 'error' ? 'Err' : `${item.progress}%`}
+                      </span>
                     </div>
-                    <div className="w-full bg-background rounded-full h-2">
+
+                    <div className="w-full bg-background rounded-full h-1.5 overflow-hidden">
                       <div
-                        className={`h-2 rounded-full transition-all ${progress === -1 ? "bg-red-500" : "bg-violet-600"
+                        className={`h-full transition-all duration-300 ${item.status === 'error' ? "bg-red-500" :
+                            item.status === 'completed' ? "bg-green-500" :
+                              "bg-violet-600"
                           }`}
-                        style={{ width: `${Math.max(0, progress)}%` }}
+                        style={{ width: `${item.status === 'pending' ? 0 : Math.max(0, item.progress)}%` }}
                       />
                     </div>
                   </div>
                 ))}
               </div>
             )}
+
           </div>
         </div>
       )}
