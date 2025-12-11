@@ -186,11 +186,14 @@ function normalizeVideo(inputPath, outputPath) {
       // Video: Scale to 1080p with padding to maintain aspect ratio
       .videoCodec('libx264')
       .outputOptions([
-        '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
+        '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1',
         '-r', '30',           // 30fps constant
-        '-preset', 'veryfast', // Fast encoding
-        '-crf', '23',         // Good quality
-        '-pix_fmt', 'yuv420p' // Compatibility
+        '-g', '60',           // GOP size = 2 seconds (for 30fps) - helps seeking/concat
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-profile:v', 'main', // Main profile for better compatibility
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart'
       ])
       // Audio: AAC 44.1kHz stereo
       .audioCodec('aac')
@@ -199,7 +202,6 @@ function normalizeVideo(inputPath, outputPath) {
       .audioBitrate('128k')
       // Output format
       .format('mp4')
-      .outputOptions('-movflags', '+faststart') // Web-friendly
       .on('start', (cmd) => {
         console.log(`   FFmpeg command: ${cmd.substring(0, 100)}...`);
       })
@@ -370,48 +372,70 @@ app.post('/upload-from-url', async (req, res) => {
       return res.status(400).json({ error: `Failed to download file: ${response.statusText}` });
     }
 
-    // Save to local videos directory
-    const localFilename = filename;
-    const filePath = path.join(VIDEOS_DIR, localFilename);
+    // Save to temp directory first
+    const tempFilename = `${Date.now()}_${filename}`;
+    const tempFilePath = path.join(TEMP_DIR, tempFilename);
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    fs.writeFileSync(filePath, buffer);
-
+    fs.writeFileSync(tempFilePath, buffer);
     const size = buffer.length;
-    console.log(`💾 Saved to: ${filePath} (${formatFileSize(size)})`);
+    console.log(`💾 Downloaded to temp: ${tempFilePath} (${formatFileSize(size)})`);
 
-    // Get video duration
+    // Generate normalized filename
+    const baseName = path.basename(filename, path.extname(filename))
+      .replace(/[^a-zA-Z0-9_-]/g, '_');
+    const timestamp = Date.now();
+    const normalizedFilename = `${baseName}_${timestamp}.mp4`;
+    const normalizedPath = path.join(VIDEOS_DIR, normalizedFilename);
+
+    // Normalize
+    try {
+      await normalizeVideo(tempFilePath, normalizedPath);
+    } catch (err) {
+      console.error('❌ Normalization failed:', err.message);
+      fs.unlink(tempFilePath, () => { }); // Cleanup
+      return res.status(500).json({ error: 'Video normalization failed' });
+    }
+
+    // Cleanup temp
+    fs.unlink(tempFilePath, () => { });
+
+    // Get video duration from normalized file
     let duration = '0:00';
     try {
-      duration = await getVideoDuration(filePath);
+      duration = await getVideoDuration(normalizedPath);
       console.log(`⏱️ Duration: ${duration}`);
     } catch (err) {
       console.error('Could not get duration:', err.message);
     }
 
-    // Generate thumbnail
-    const thumbnailFilename = localFilename.replace(/\.[^/.]+$/, '.jpg');
+    // Generate thumbnail from normalized file
+    const thumbnailFilename = normalizedFilename.replace(/\.mp4$/, '.jpg');
     const thumbnailPath = path.join(THUMBNAILS_DIR, thumbnailFilename);
 
     try {
-      await generateThumbnail(filePath, thumbnailPath);
+      await generateThumbnail(normalizedPath, thumbnailPath);
     } catch (err) {
       console.error('Thumbnail generation failed, using placeholder');
     }
 
-    // Derive title from original filename or the dropzone filename
+    // Get normalized size
+    const normalizedStats = fs.statSync(normalizedPath);
+    const normalizedSize = formatFileSize(normalizedStats.size);
+
+    // Derive title
     const titleSource = originalName || filename;
     const title = path.basename(titleSource, path.extname(titleSource))
       .replace(/[-_]/g, ' ')
-      .replace(/_\d+$/, ''); // Remove timestamp suffix
+      .replace(/_\d+$/, '');
 
     // Insert into Supabase videos table
     const videoData = {
-      filename: localFilename,
+      filename: normalizedFilename,
       title,
       duration,
-      size: formatFileSize(size),
+      size: normalizedSize,
       thumbnail_url: `/thumbnails/${thumbnailFilename}`,
     };
 
@@ -426,16 +450,7 @@ app.post('/upload-from-url', async (req, res) => {
       return res.status(500).json({ error: 'Failed to save video metadata' });
     }
 
-    console.log(`✅ Upload from URL complete: ${localFilename}`);
-
-    // Optionally delete from dropzone to free up space
-    // (uncomment if you want automatic cleanup)
-    // try {
-    //   await supabase.storage.from('dropzone').remove([filename]);
-    //   console.log(`🗑️ Cleaned up dropzone: ${filename}`);
-    // } catch (cleanupErr) {
-    //   console.error('Cleanup failed:', cleanupErr.message);
-    // }
+    console.log(`✅ Upload and normalization complete: ${normalizedFilename}`);
 
     // Return the new video object
     res.json({
@@ -445,7 +460,7 @@ app.post('/upload-from-url', async (req, res) => {
       duration: data.duration,
       size: data.size,
       thumbnail: data.thumbnail_url,
-      url: `/videos/${localFilename}`,
+      url: `/videos/${normalizedFilename}`,
       created_at: data.created_at
     });
 
