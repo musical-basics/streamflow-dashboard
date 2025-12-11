@@ -589,6 +589,32 @@ app.delete('/videos/:id', async (req, res) => {
     }
 
     console.log(`🗑️ Deleted video: ${video.filename}`);
+
+    // Update Playlist: Remove deleted video from active stream config
+    try {
+      const { data: config } = await getStreamConfig();
+      if (config && Array.isArray(config.playlist)) {
+        const originalLength = config.playlist.length;
+        const newPlaylist = config.playlist.filter(item => {
+          // Check by ID or Filename
+          if (item.id && item.id === video.id) return false;
+          if (item.filename && item.filename === video.filename) return false;
+          return true;
+        });
+
+        if (newPlaylist.length < originalLength) {
+          console.log(`🧹 Removing deleted video from playlist (${originalLength} -> ${newPlaylist.length})`);
+          await supabase
+            .from('stream_config')
+            .update({ playlist: newPlaylist })
+            .eq('id', config.id);
+          console.log('✅ Playlist updated');
+        }
+      }
+    } catch (err) {
+      console.error('⚠️ Failed to cleanup playlist:', err.message);
+    }
+
     res.json({ success: true, deleted: video.id });
 
   } catch (error) {
@@ -725,73 +751,92 @@ async function getStreamConfig() {
 }
 
 /**
- * Create playlist file for FFmpeg concat
+ * Get absolute file path for a playlist item
  */
-function createPlaylistFile(playlist) {
-  if (!Array.isArray(playlist) || playlist.length === 0) {
-    console.error('❌ Playlist is empty or invalid');
-    return false;
+function getVideoPath(item) {
+  let filePath = null;
+
+  if (typeof item === 'string') {
+    filePath = item;
+  } else if (item.filename) {
+    filePath = path.join(VIDEOS_DIR, item.filename);
+  } else if (item.url) {
+    // Has url property - need to extract the filename and construct local path
+    let extractedPath = item.url;
+    // If it's a full HTTP URL, extract just the path part
+    if (item.url.startsWith('http')) {
+      try {
+        const urlObj = new URL(item.url);
+        extractedPath = urlObj.pathname;
+      } catch (e) {
+        return null;
+      }
+    }
+    // Convert /videos/filename.mp4 to local path
+    if (extractedPath.startsWith('/videos/')) {
+      const filename = extractedPath.replace('/videos/', '');
+      filePath = path.join(VIDEOS_DIR, filename);
+    } else if (extractedPath.startsWith('/')) {
+      filePath = path.join(__dirname, 'public', extractedPath);
+    } else {
+      filePath = extractedPath;
+    }
+  } else if (item.path) {
+    filePath = item.path;
+  }
+  return filePath;
+}
+
+/**
+ * Validate and clean playlist (remove missing files)
+ */
+function cleanPlaylist(playlist) {
+  if (!Array.isArray(playlist)) return { validPlaylist: [], hasChanges: false, removedCount: 0 };
+
+  const validPlaylist = [];
+  let removedCount = 0;
+
+  for (const item of playlist) {
+    const filePath = getVideoPath(item);
+    if (filePath && fs.existsSync(filePath)) {
+      validPlaylist.push(item);
+    } else {
+      removedCount++;
+      console.log(`⚠️ Removing missing file from playlist: ${item.title || item.filename || 'unknown'}`);
+    }
   }
 
-  console.log('📋 Processing playlist items:', JSON.stringify(playlist, null, 2));
+  return {
+    validPlaylist,
+    hasChanges: removedCount > 0,
+    removedCount
+  };
+}
+
+/**
+ * Create playlist file for FFmpeg concat demuxer
+ */
+function createPlaylistFile(playlist) {
+  console.log('📋 Creating playlist file...');
 
   const validLines = [];
 
   for (const item of playlist) {
-    let filePath = null;
-
-    if (typeof item === 'string') {
-      // Direct string path
-      filePath = item;
-    } else if (item.filename) {
-      // Best option: use filename directly
-      filePath = path.join(VIDEOS_DIR, item.filename);
-    } else if (item.url) {
-      // Has url property - need to extract the filename and construct local path
-      let extractedPath = item.url;
-
-      // If it's a full HTTP URL, extract just the path part
-      if (item.url.startsWith('http')) {
-        try {
-          const urlObj = new URL(item.url);
-          extractedPath = urlObj.pathname; // Gets /videos/filename.mp4
-        } catch (e) {
-          console.error('❌ Invalid URL:', item.url);
-          continue;
-        }
-      }
-
-      // Convert /videos/filename.mp4 to local path
-      if (extractedPath.startsWith('/videos/')) {
-        const filename = extractedPath.replace('/videos/', '');
-        filePath = path.join(VIDEOS_DIR, filename);
-      } else if (extractedPath.startsWith('/')) {
-        filePath = path.join(__dirname, 'public', extractedPath);
-      } else {
-        filePath = extractedPath;
-      }
-    } else if (item.path) {
-      filePath = item.path;
-    } else if (item.id) {
-      // Try to find video by ID - look in videos directory
-      console.log(`⚠️ Playlist item has only id: ${item.id}, title: ${item.title}`);
-      // Skip items without a valid path
-      continue;
-    }
+    const filePath = getVideoPath(item);
 
     if (!filePath) {
       console.error('❌ Could not determine file path for item:', item);
       continue;
     }
 
-    // Check if file exists
     if (!fs.existsSync(filePath)) {
       console.error(`❌ File not found: ${filePath}`);
       continue;
     }
 
-    validLines.push(`file '${filePath}'`);
-    console.log(`✅ Added to playlist: ${filePath}`);
+    // Escape single quotes in filename for FFmpeg concat list
+    const escapedPath = filePath.replace(/'/g, "'\\''");
+    validLines.push(`file '${escapedPath}'`);
   }
 
   if (validLines.length === 0) {
@@ -1037,6 +1082,25 @@ async function pollStreamConfig() {
 
     // Start stream if active and not running
     if (config.is_active && !isStreaming) {
+
+      // Auto-heal: Clean playlist of missing files before starting
+      const { validPlaylist, hasChanges, removedCount } = cleanPlaylist(config.playlist);
+
+      if (hasChanges) {
+        console.log(`🧹 Creating clean playlist: Removed ${removedCount} missing videos`);
+        // Update DB asynchronously (don't block stream start)
+        supabase.from('stream_config')
+          .update({ playlist: validPlaylist })
+          .eq('id', config.id)
+          .then(({ error }) => {
+            if (error) console.error('❌ Failed to update cleaned playlist:', error);
+            else console.log('✅ Updated playlist in Supabase');
+          });
+
+        // Use cleaned playlist for this session
+        config.playlist = validPlaylist;
+      }
+
       console.log('▶️ Stream config is active, starting stream...');
       startStream(config);
       lastConfig = config;
