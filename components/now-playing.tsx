@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
-import { Video, SkipForward } from "lucide-react"
+import { Video, SkipForward, SkipBack } from "lucide-react"
 
 interface NowPlayingVideo {
     id: string
@@ -73,10 +73,31 @@ export function NowPlaying({ isLive }: NowPlayingProps) {
         return thumbnail
     }
 
+    const [isLoading, setIsLoading] = useState(false)
+
+    const handleSkip = async (direction: 'next' | 'previous') => {
+        if (isLoading) return
+        setIsLoading(true)
+        try {
+            await fetch('/api/proxy/control/skip', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ direction })
+            })
+            // Optimistic update or just wait for poll? 
+            // Better to wait for poll or just let it refresh naturally.
+            // Maybe slight delay before re-enabling buttons
+            setTimeout(() => setIsLoading(false), 500)
+        } catch (error) {
+            console.error('Skip error:', error)
+            setIsLoading(false)
+        }
+    }
+
     return (
         <div className="flex flex-col md:flex-row gap-3 mb-4">
             {/* Now Playing Card */}
-            <Card className="p-3 flex-1 bg-gradient-to-r from-red-500/10 to-transparent border-red-500/20">
+            <Card className="p-3 flex-1 bg-gradient-to-r from-red-500/10 to-transparent border-red-500/20 relative group">
                 <div className="flex items-center gap-3">
                     <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
                     <div className="w-16 h-10 rounded bg-secondary overflow-hidden flex-shrink-0">
@@ -97,7 +118,28 @@ export function NowPlaying({ isLive }: NowPlayingProps) {
                         <p className="text-sm font-medium truncate">{data.current?.title || 'Unknown'}</p>
                         <p className="text-xs text-muted-foreground">{data.current?.duration || '--:--'}</p>
                     </div>
-                    <div className="text-xs text-muted-foreground flex-shrink-0">
+
+                    {/* Controls */}
+                    <div className="flex items-center gap-1 ml-2">
+                        <button
+                            onClick={() => handleSkip('previous')}
+                            disabled={isLoading}
+                            className="p-1.5 hover:bg-white/10 rounded-full transition-colors disabled:opacity-50"
+                            title="Previous Video"
+                        >
+                            <SkipBack className="w-4 h-4 text-foreground/80" />
+                        </button>
+                        <button
+                            onClick={() => handleSkip('next')}
+                            disabled={isLoading}
+                            className="p-1.5 hover:bg-white/10 rounded-full transition-colors disabled:opacity-50"
+                            title="Next Video"
+                        >
+                            <SkipForward className="w-4 h-4 text-foreground/80" />
+                        </button>
+                    </div>
+
+                    <div className="text-xs text-muted-foreground flex-shrink-0 ml-1">
                         {data.index + 1}/{data.total}
                     </div>
                 </div>
@@ -105,7 +147,7 @@ export function NowPlaying({ isLive }: NowPlayingProps) {
 
             {/* Up Next Card */}
             {data.next && (
-                <Card className="p-3 flex-1 bg-gradient-to-r from-primary/5 to-transparent border-border/50">
+                <Card className="p-3 flex-1 bg-gradient-to-r from-primary/5 to-transparent border-border/50 opacity-60 hover:opacity-100 transition-opacity">
                     <div className="flex items-center gap-3">
                         <SkipForward className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                         <div className="w-16 h-10 rounded bg-secondary overflow-hidden flex-shrink-0">
