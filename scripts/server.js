@@ -636,22 +636,11 @@ app.get('/stream/status', (req, res) => {
 /**
  * Parse duration string (e.g., "3:45" or "1:23:45") to seconds
  */
-function parseDurationToSeconds(duration) {
-  if (!duration) return 0;
-  const parts = duration.split(':').map(Number);
-  if (parts.length === 3) {
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  } else if (parts.length === 2) {
-    return parts[0] * 60 + parts[1];
-  }
-  return 0;
-}
-
 /**
- * Get currently playing video info based on elapsed time
+ * Get currently playing video info based on DJ index
  */
 app.get('/now-playing', (req, res) => {
-  if (!isStreaming || currentPlaylist.length === 0 || !streamStartTime) {
+  if (!isStreaming || currentPlaylist.length === 0) {
     return res.json({
       current: null,
       next: null,
@@ -661,41 +650,16 @@ app.get('/now-playing', (req, res) => {
     });
   }
 
-  // Calculate elapsed seconds since stream started
-  const elapsedMs = Date.now() - streamStartTime;
-  const elapsedSeconds = Math.floor(elapsedMs / 1000);
-
-  // Calculate total playlist duration
-  const durations = currentPlaylist.map(item => parseDurationToSeconds(item.duration));
-  const totalDuration = durations.reduce((sum, d) => sum + d, 0);
-
-  if (totalDuration === 0) {
-    // Fallback if no duration data
-    return res.json({
-      current: currentPlaylist[0] || null,
-      next: currentPlaylist[1] || null,
-      index: 0,
-      total: currentPlaylist.length,
-      isStreaming: true
-    });
-  }
-
-  // Find which video is currently playing based on elapsed time (with looping)
-  let timeInLoop = elapsedSeconds % totalDuration;
-  let currentIndex = 0;
-  let cumulativeTime = 0;
-
-  for (let i = 0; i < currentPlaylist.length; i++) {
-    cumulativeTime += durations[i];
-    if (timeInLoop < cumulativeTime) {
-      currentIndex = i;
-      break;
-    }
-  }
-
-  const nextIndex = (currentIndex + 1) % currentPlaylist.length;
+  // With DJ Mode, we always know exactly which index is feeding the master stream
   const current = currentPlaylist[currentIndex];
+  // Next is simply index + 1 (wrapping around)
+  const nextIndex = (currentIndex + 1) % currentPlaylist.length;
   const next = currentPlaylist[nextIndex];
+
+  // We don't have exact "elapsed" time within the file easily available 
+  // without parsing the feeder ffmpeg output, but for now we can omit it 
+  // or return 0. The frontend uses it for progress bars.
+  // TODO: Improved elapsed time tracking by monitoring start time of current feeder.
 
   res.json({
     current: current ? {
@@ -715,22 +679,25 @@ app.get('/now-playing', (req, res) => {
     index: currentIndex,
     total: currentPlaylist.length,
     isStreaming: true,
-    elapsedSeconds
+    elapsedSeconds: 0 // Placeholder
   });
 });
 
 // =============================================================================
-// BROADCAST ENGINE
+// BROADCAST ENGINE (DJ MODE)
 // =============================================================================
 
-let ffmpegProcess = null;
+let masterFfmpeg = null; // The persistent process sending to RTMP
+let currentFeederProcess = null; // The process reading the current file
 let isStreaming = false;
 let currentConfigId = null;
 let lastConfig = null;
 
-// Now Playing tracking
+// Playlist State
 let currentPlaylist = [];
-let streamStartTime = null; // Timestamp when stream started
+let currentIndex = 0;
+let isSwitching = false;
+let masterStdin = null; // Stream to write video data to
 
 /**
  * Fetch stream configuration from Supabase
@@ -798,6 +765,7 @@ function cleanPlaylist(playlist) {
 
   for (const item of playlist) {
     const filePath = getVideoPath(item);
+
     if (filePath && fs.existsSync(filePath)) {
       validPlaylist.push(item);
     } else {
@@ -814,317 +782,249 @@ function cleanPlaylist(playlist) {
 }
 
 /**
- * Create playlist file for FFmpeg concat demuxer
+ * Start the Master FFmpeg Process
+ * This process listens to stdin (MPEG-TS) and pushes to RTMP
  */
-function createPlaylistFile(playlist) {
-  console.log('📋 Creating playlist file...');
-
-  const validLines = [];
-
-  for (const item of playlist) {
-    const filePath = getVideoPath(item);
-
-    if (!filePath) {
-      console.error('❌ Could not determine file path for item:', item);
-      continue;
-    }
-
-    if (!fs.existsSync(filePath)) {
-      console.error(`❌ File not found: ${filePath}`);
-      continue;
-    }
-
-    // Escape single quotes in filename for FFmpeg concat list
-    const escapedPath = filePath.replace(/'/g, "'\\''");
-    validLines.push(`file '${escapedPath}'`);
-  }
-
-  if (validLines.length === 0) {
-    console.error('❌ No valid video files found in playlist');
-    return false;
-  }
-
-  fs.writeFileSync(PLAYLIST_FILE, validLines.join('\n'));
-  console.log(`📝 Created playlist file with ${validLines.length} items`);
-  return true;
-}
-
-/**
- * Start FFmpeg stream using child_process.spawn for better control
- */
-function startStream(config) {
-  if (isStreaming) {
-    console.log('⚠️ Stream already running');
-    return;
-  }
+function startMasterStream(config) {
+  if (masterFfmpeg) return;
 
   const {
-    playlist,
     rtmp_url,
     stream_key,
-    bitrate,
-    audio_overlay_enabled,
-    audio_volume
+    bitrate
   } = config;
-
-  if (!playlist || !Array.isArray(playlist) || playlist.length === 0) {
-    console.error('❌ No playlist items found in config');
-    return;
-  }
 
   if (!rtmp_url || !stream_key) {
     console.error('❌ Missing RTMP URL or stream key');
     return;
   }
 
-  // Create playlist file
-  if (!createPlaylistFile(playlist)) {
-    console.error('❌ Failed to create playlist file');
-    return;
-  }
-
   const outputUrl = `${rtmp_url}/${stream_key}`;
   const vBitrate = bitrate || 8000;
-  const audioMixWeight = audio_overlay_enabled ? (audio_volume || 35) / 100 : 0;
-
-  // Track current playlist for now-playing feature
-  currentPlaylist = playlist;
-  streamStartTime = Date.now(); // Unix timestamp for time-based tracking
 
   console.log('');
   console.log('═══════════════════════════════════════════════════════════');
-  console.log('🎬 STARTING STREAM');
+  console.log('🎬 STARTING MASTER STREAM ENGINE');
   console.log('═══════════════════════════════════════════════════════════');
   console.log('📡 RTMP URL:', rtmp_url);
-  console.log('🔊 Audio overlay:', audio_overlay_enabled ? `${audio_volume}%` : 'disabled');
-  console.log('📊 Bitrate:', bitrate || 8000, 'kbps');
-  console.log('');
-  console.log('📋 PLAYLIST (' + playlist.length + ' videos):');
-  playlist.forEach((video, i) => {
-    console.log(`   ${i + 1}. ${video.title || video.filename} (${video.duration || 'unknown'})`);
-  });
-  console.log('═══════════════════════════════════════════════════════════');
+  console.log('📊 Bitrate:', vBitrate, 'kbps');
   console.log('');
 
-  // Build FFmpeg arguments
-  let ffmpegArgs = [
-    '-re',
-    '-stream_loop', '-1',
-    '-f', 'concat',
-    '-safe', '0',
-    '-i', PLAYLIST_FILE
-  ];
+  // Master args: Read MPEG-TS from stdin, Re-encode to ensure continuous timestamps
+  // We MUST re-encode because concatenating MPEG-TS pipes resets timestamps, 
+  // and -c copy would pass those resets to RTMP, breaking the stream.
 
-  // Add rain audio if overlay is enabled
-  const useAudioOverlay = audio_overlay_enabled && fs.existsSync(RAIN_AUDIO_PATH);
+  const masterArgs = [
+    '-fflags', '+genpts+discardcorrupt', // fix timestamps
+    '-re',             // Read input at native frame rate (prevents fast-forwarding if feeder bursts)
+    '-f', 'mpegts',
+    '-i', 'pipe:0',    // Read from stdin
 
-  if (useAudioOverlay) {
-    ffmpegArgs.push(
-      '-stream_loop', '-1',
-      '-i', RAIN_AUDIO_PATH
-    );
-
-    // Add complex filter for audio mixing with normalization
-    // Normalize both audio streams to stereo 44100Hz before mixing to prevent format mismatches
-    const audioFilter = [
-      // Normalize video audio: force to stereo 44100Hz
-      '[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[audio1]',
-      // Normalize rain audio: force to stereo 44100Hz
-      '[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[audio2]',
-      // Mix the normalized audio streams
-      `[audio1][audio2]amix=inputs=2:duration=first:weights=1 ${audioMixWeight}[aout]`
-    ].join(';');
-
-    ffmpegArgs.push(
-      '-filter_complex', audioFilter,
-      '-map', '0:v',
-      '-map', '[aout]'
-    );
-  } else {
-    // No audio overlay - still normalize the video audio
-    ffmpegArgs.push(
-      '-af', 'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo',
-      '-map', '0:v',
-      '-map', '0:a'
-    );
-  }
-
-  // Add output options
-  ffmpegArgs.push(
+    // Video Encoding
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-tune', 'zerolatency',
     '-b:v', `${vBitrate}k`,
     '-maxrate', `${vBitrate}k`,
     '-bufsize', `${vBitrate * 2}k`,
+    '-g', '60',        // Keyframe interval (2s)
+    '-pix_fmt', 'yuv420p',
+
+    // Audio Encoding
     '-c:a', 'aac',
     '-b:a', '128k',
     '-ar', '44100',
-    '-r', '30',
-    '-g', '60',
+    '-ac', '2',
+
+    // Output
     '-f', 'flv',
     outputUrl
-  );
+  ];
 
-  console.log('🚀 FFmpeg command: ffmpeg', ffmpegArgs.join(' '));
+  console.log('🚀 Master Command: ffmpeg ' + masterArgs.join(' '));
 
-  // Spawn FFmpeg process
-  ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+  masterFfmpeg = spawn('ffmpeg', masterArgs);
+  masterStdin = masterFfmpeg.stdin; // We will pipe into this
 
-  ffmpegProcess.stdout.on('data', (data) => {
-    console.log(`FFmpeg stdout: ${data}`);
+  isStreaming = true;
+
+  masterFfmpeg.stderr.on('data', (data) => {
+    // Log master status (maybe filter spam)
+    const line = data.toString().trim();
+    if (!line) return;
+    if (line.includes('frame=') && line.includes('size=')) return; // Filter stats
+    console.log(`[MASTER] ${line}`);
   });
 
-  ffmpegProcess.stderr.on('data', (data) => {
-    // Convert buffer to string and split by lines to handle chunks correctly
-    const outputLines = data.toString().split('\n');
-
-    for (const line of outputLines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      // 1. Filter out the spammy progress bar
-      if (trimmed.includes('frame=') && trimmed.includes('fps=')) {
-        // Do nothing (hides the spam)
-        continue;
-      }
-
-      // 2. Log EVERYTHING else so we can see the "Opening" message format
-      console.log(`[FFMPEG] ${trimmed}`);
-
-      // 3. Try to catch the now playing (standard format)
-      if (trimmed.includes("Opening '")) {
-        try {
-          // Extract filename between single quotes
-          const match = trimmed.match(/'([^']+)'/);
-          if (match && match[1]) {
-            const filename = match[1].split('/').pop();
-            console.log(`🎵 NOW PLAYING: ${filename}`);
-          }
-        } catch (e) { /* ignore parse errors */ }
-      }
+  masterFfmpeg.on('close', (code) => {
+    console.log(`🛑 Master process exited with code ${code}`);
+    masterFfmpeg = null;
+    masterStdin = null;
+    isStreaming = false;
+    // If master dies, kill feeder too
+    if (currentFeederProcess) {
+      currentFeederProcess.kill();
+      currentFeederProcess = null;
     }
   });
 
-  ffmpegProcess.on('spawn', () => {
-    console.log('🚀 FFmpeg process spawned');
-    isStreaming = true;
+  // Start feeding video !
+  playNextVideo();
+}
+
+/**
+ * Play the next video in the playlist (The DJ Logic)
+ */
+function playNextVideo() {
+  if (!isStreaming || !masterStdin) return;
+  if (currentPlaylist.length === 0) {
+    console.log('⚠️ Playlist empty. Waiting...');
+    setTimeout(playNextVideo, 2000);
+    return;
+  }
+
+  // Ensure index is valid
+  if (currentIndex >= currentPlaylist.length) {
+    currentIndex = 0; // Loop back
+  }
+
+  const video = currentPlaylist[currentIndex];
+  const filePath = getVideoPath(video);
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    console.error(`❌ File not found for index ${currentIndex}: ${video.title}`);
+    currentIndex++;
+    playNextVideo();
+    return;
+  }
+
+  console.log(`\n🎵 DJ CUE: [${currentIndex + 1}/${currentPlaylist.length}] "${video.title}"`);
+  console.log(`   File: ${path.basename(filePath)}`);
+
+  // Spawn Feeder Process
+  // Convert MP4 to MPEG-TS and pipe to stdout
+  const feederArgs = [
+    '-re',                // Read at native framerate (crucial for streaming)
+    '-i', filePath,
+    '-c', 'copy',         // Copy streams (fast, requires normalization)
+    '-bsf:v', 'h264_mp4toannexb', // Convert to Annex B bitstream for MPEG-TS
+    '-f', 'mpegts',       // Output formatted as MPEG-TS
+    'pipe:1'              // Write to stdout
+  ];
+
+  currentFeederProcess = spawn('ffmpeg', feederArgs);
+
+  // Pipe feeder stdout -> master stdin
+  currentFeederProcess.stdout.pipe(masterStdin, { end: false }); // Don't close master when feeder ends
+
+  currentFeederProcess.on('error', (err) => {
+    console.error('❌ Feeder Error:', err);
+    // Try next
+    if (currentFeederProcess) currentFeederProcess.kill();
+    currentIndex++;
+    setTimeout(playNextVideo, 1000);
   });
 
-  ffmpegProcess.on('error', (err) => {
-    console.error('❌ FFmpeg spawn error:', err.message);
-    isStreaming = false;
-    ffmpegProcess = null;
-  });
-
-  ffmpegProcess.on('close', (code) => {
-    console.log(`🛑 FFmpeg process exited with code ${code}`);
-    isStreaming = false;
-    ffmpegProcess = null;
+  currentFeederProcess.on('close', (code) => {
+    if (code === 0) {
+      console.log(`✅ Finished: "${video.title}"`);
+      // Move to next
+      currentIndex++;
+      playNextVideo();
+    } else if (code !== null) { // code is null if killed manually
+      console.log(`⚠️ Feeder exited with code ${code}, trying next...`);
+      currentIndex++;
+      setTimeout(playNextVideo, 1000);
+    }
   });
 }
 
 /**
- * Stop FFmpeg stream
+ * Stop Everything
  */
 function stopStream() {
-  if (ffmpegProcess) {
-    console.log('🛑 Stopping stream...');
-    ffmpegProcess.kill('SIGTERM');
-    ffmpegProcess = null;
-    isStreaming = false;
-    console.log('✅ Stream stopped');
+  console.log('🛑 Stopping Stream Config...');
+  if (currentFeederProcess) {
+    currentFeederProcess.kill();
+    currentFeederProcess = null;
   }
+  if (masterFfmpeg) {
+    masterFfmpeg.kill(); // This will close the stream
+    masterFfmpeg = null;
+    masterStdin = null;
+  }
+  isStreaming = false;
 }
 
 /**
- * Check if config has changed significantly
- * Now includes playlist changes to auto-restart when playlist is updated
- */
-function configChanged(oldConfig, newConfig) {
-  if (!oldConfig) return false;
-
-  const playlistChanged = JSON.stringify(oldConfig.playlist) !== JSON.stringify(newConfig.playlist);
-  const settingsChanged = (
-    oldConfig.audio_volume !== newConfig.audio_volume ||
-    oldConfig.audio_overlay_enabled !== newConfig.audio_overlay_enabled ||
-    oldConfig.bitrate !== newConfig.bitrate
-  );
-
-  if (playlistChanged) {
-    console.log('🔄 Playlist changed - will restart stream');
-    console.log('📋 Old playlist:', oldConfig.playlist?.length || 0, 'videos');
-    console.log('📋 New playlist:', newConfig.playlist?.length || 0, 'videos');
-  }
-  if (settingsChanged) {
-    console.log('🔄 Stream settings changed - will restart stream');
-  }
-
-  return playlistChanged || settingsChanged;
-}
-
-/**
- * Poll stream configuration
+ * Poll config and handle updates
  */
 async function pollStreamConfig() {
   try {
     const config = await getStreamConfig();
+    if (!config) return;
 
-    if (!config) {
-      console.log('⚠️ No stream config found');
-      if (isStreaming) {
-        stopStream();
+    // 1. Handle ON/OFF Toggle
+    if (config.is_active && !isStreaming) {
+      console.log('▶️ Stream activated. Initializing...');
+      // Clean playlist first
+      const { validPlaylist, hasChanges } = cleanPlaylist(config.playlist);
+      if (hasChanges) {
+        // Should update DB, but for now just use valid in memory
+        config.playlist = validPlaylist;
       }
+      currentPlaylist = config.playlist;
+      currentIndex = 0;
+      startMasterStream(config);
+      lastConfig = config;
+    }
+    else if (!config.is_active && isStreaming) {
+      console.log('⏹️ Stream deactivated. Stopping.');
+      stopStream();
       return;
     }
 
-    currentConfigId = config.id;
+    // 2. Handle Runtime Updates (if streaming)
+    if (isStreaming && config.is_active) {
+      // Check for Playlist Changes
+      const oldJson = JSON.stringify(lastConfig?.playlist || []);
+      const newJson = JSON.stringify(config.playlist || []);
 
-    // Start stream if active and not running
-    if (config.is_active && !isStreaming) {
+      if (oldJson !== newJson) {
+        console.log('🔄 Playlist updated!');
 
-      // Auto-heal: Clean playlist of missing files before starting
-      const { validPlaylist, hasChanges, removedCount } = cleanPlaylist(config.playlist);
+        const oldVideo = currentPlaylist[currentIndex];
 
-      if (hasChanges) {
-        console.log(`🧹 Creating clean playlist: Removed ${removedCount} missing videos`);
-        // Update DB asynchronously (don't block stream start)
-        supabase.from('stream_config')
-          .update({ playlist: validPlaylist })
-          .eq('id', config.id)
-          .then(({ error }) => {
-            if (error) console.error('❌ Failed to update cleaned playlist:', error);
-            else console.log('✅ Updated playlist in Supabase');
-          });
+        // Update playlist in memory
+        const { validPlaylist } = cleanPlaylist(config.playlist);
+        currentPlaylist = validPlaylist;
 
-        // Use cleaned playlist for this session
-        config.playlist = validPlaylist;
-      }
+        // POINTER CORRECTION
+        // Find where the currently playing video went
+        if (oldVideo) {
+          const newIndex = currentPlaylist.findIndex(v =>
+            (v.id && v.id === oldVideo.id) ||
+            (v.filename && v.filename === oldVideo.filename)
+          );
 
-      console.log('▶️ Stream config is active, starting stream...');
-      startStream(config);
-      lastConfig = config;
-    }
-    // Stop stream if inactive and running
-    else if (!config.is_active && isStreaming) {
-      console.log('⏹️ Stream config is inactive, stopping stream...');
-      stopStream();
-      lastConfig = null;
-    }
-    // Restart if settings changed while streaming
-    else if (isStreaming && configChanged(lastConfig, config)) {
-      console.log('🔄 Config changed, restarting stream...');
-      stopStream();
-      setTimeout(() => {
-        startStream(config);
+          if (newIndex !== -1) {
+            console.log(`📍 Pointer Correction: Index moved from ${currentIndex} to ${newIndex}`);
+            currentIndex = newIndex;
+          } else {
+            console.log(`⚠️ Current video removed from playlist. Keeping index ${currentIndex} (might jump)`);
+            // Clamp index just in case
+            if (currentIndex >= currentPlaylist.length) currentIndex = 0;
+          }
+        }
+
         lastConfig = config;
-      }, 2000);
+      }
     }
 
   } catch (error) {
-    console.error('❌ Error polling stream config:', error);
+    console.error('Poll Error:', error);
   }
-}
+} // End pollStreamConfig
 
 // =============================================================================
 // GRACEFUL SHUTDOWN
