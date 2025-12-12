@@ -27,6 +27,7 @@ interface NowPlayingProps {
 
 export function NowPlaying({ isLive }: NowPlayingProps) {
     const [data, setData] = useState<NowPlayingData | null>(null)
+    const [isLoading, setIsLoading] = useState(false)
 
     useEffect(() => {
         if (!isLive) {
@@ -73,7 +74,7 @@ export function NowPlaying({ isLive }: NowPlayingProps) {
         return thumbnail
     }
 
-    const [isLoading, setIsLoading] = useState(false)
+
 
     const handleSkip = async (direction: 'next' | 'previous') => {
         if (isLoading) return

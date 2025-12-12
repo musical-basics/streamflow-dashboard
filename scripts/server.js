@@ -697,6 +697,25 @@ let lastConfig = null;
 let currentPlaylist = [];
 let currentIndex = 0;
 let skipToTarget = false; // Flag to indicate manual skip
+let masterStdin = null; // Stream to write video data to
+
+/**
+ * Fetch stream configuration from Supabase
+ */
+async function getStreamConfig() {
+  const { data, error } = await supabase
+    .from('stream_config')
+    .select('*')
+    .limit(1)
+    .single();
+
+  if (error) {
+    console.error('Error fetching stream config:', error.message);
+    return null;
+  }
+
+  return data;
+}
 
 /**
  * Handle skip controls
@@ -968,79 +987,7 @@ function startMasterStream(config) {
   playNextVideo();
 }
 
-/**
- * Play the next video in the playlist (The DJ Logic)
- */
-function playNextVideo() {
-  if (!isStreaming || !masterStdin) return;
-  if (currentPlaylist.length === 0) {
-    console.log('⚠️ Playlist empty. Waiting...');
-    setTimeout(playNextVideo, 2000);
-    return;
-  }
 
-  // Ensure index is valid
-  if (currentIndex >= currentPlaylist.length) {
-    currentIndex = 0; // Loop back
-  }
-
-  const video = currentPlaylist[currentIndex];
-  const filePath = getVideoPath(video);
-
-  if (!filePath || !fs.existsSync(filePath)) {
-    console.error(`❌ File not found for index ${currentIndex}: ${video.title}`);
-    currentIndex++;
-    playNextVideo();
-    return;
-  }
-
-  console.log(`\n🎵 DJ CUE: [${currentIndex + 1}/${currentPlaylist.length}] "${video.title}"`);
-  console.log(`   File: ${path.basename(filePath)}`);
-
-  // Spawn Feeder Process
-  // Convert MP4 to MPEG-TS and pipe to stdout
-  const feederArgs = [
-    '-re',                // Read at native framerate (crucial for streaming)
-    '-i', filePath,
-    '-c', 'copy',         // Copy streams (fast, requires normalization)
-    '-bsf:v', 'h264_mp4toannexb', // Convert to Annex B bitstream for MPEG-TS
-    '-f', 'mpegts',       // Output formatted as MPEG-TS
-    'pipe:1'              // Write to stdout
-  ];
-
-  currentFeederProcess = spawn('ffmpeg', feederArgs);
-
-  // Pipe feeder stdout -> master stdin
-  currentFeederProcess.stdout.pipe(masterStdin, { end: false }); // Don't close master when feeder ends
-
-  // CRITICAL: We MUST consume stderr, otherwise the process hangs when the buffer fills (64KB)!
-  currentFeederProcess.stderr.on('data', (data) => {
-    // Just drain it, or log errors if needed. 
-    // FFmpeg is chatty, so maybe only log if it looks like an error?
-    // For now, let's just drain it to prevent freezing.
-  });
-
-  currentFeederProcess.on('error', (err) => {
-    console.error('❌ Feeder Error:', err);
-    // Try next
-    if (currentFeederProcess) currentFeederProcess.kill();
-    currentIndex++;
-    setTimeout(playNextVideo, 1000);
-  });
-
-  currentFeederProcess.on('close', (code) => {
-    if (code === 0) {
-      console.log(`✅ Finished: "${video.title}"`);
-      // Move to next
-      currentIndex++;
-      playNextVideo();
-    } else if (code !== null) { // code is null if killed manually
-      console.log(`⚠️ Feeder exited with code ${code}, trying next...`);
-      currentIndex++;
-      setTimeout(playNextVideo, 1000);
-    }
-  });
-}
 
 /**
  * Stop Everything
