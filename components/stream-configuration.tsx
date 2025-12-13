@@ -13,19 +13,22 @@ import { toast } from "@/hooks/use-toast"
 interface AudioOverlayCardProps {
   audioEnabled: boolean
   audioVolume: number
+  audioFile: string | null
   onAudioEnabledChange: (value: boolean) => void
   onAudioVolumeChange: (value: number) => void
+  onAudioFileChange: (file: string | null) => void
 }
 
 function AudioOverlayCard({
   audioEnabled,
   audioVolume,
+  audioFile,
   onAudioEnabledChange,
   onAudioVolumeChange,
+  onAudioFileChange,
 }: AudioOverlayCardProps) {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
-  const [audioFileName, setAudioFileName] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileSelect = () => {
@@ -69,12 +72,21 @@ function AudioOverlayCard({
 
         xhr.addEventListener('load', () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            setAudioFileName(file.name)
-            toast({
-              title: "Upload Complete",
-              description: "Background audio has been updated!",
-            })
-            resolve()
+            try {
+              const responseData = JSON.parse(xhr.responseText)
+              // Update parent state with the returned filename
+              onAudioFileChange(responseData.filename)
+
+              toast({
+                title: "Upload Complete",
+                description: "Background audio has been updated!",
+              })
+              resolve()
+            } catch (e) {
+              // Fallback if parsing fails (though backend should return JSON)
+              onAudioFileChange(file.name)
+              resolve()
+            }
           } else {
             try {
               const errorData = JSON.parse(xhr.responseText)
@@ -125,7 +137,7 @@ function AudioOverlayCard({
             <div>
               <p className="text-sm font-medium text-foreground">Rain Sounds</p>
               <p className="text-xs text-muted-foreground">
-                {audioFileName ? audioFileName : "Looping audio overlay"}
+                {audioFile ? audioFile : "Looping audio overlay"}
               </p>
             </div>
           </div>
@@ -195,11 +207,13 @@ interface StreamConfigProps {
   bitrate: number
   audioEnabled: boolean
   audioVolume: number
+  audioFile: string | null
   onStreamKeyChange: (value: string) => void
   onRtmpUrlChange: (value: string) => void
   onBitrateChange: (value: number) => void
   onAudioEnabledChange: (value: boolean) => void
   onAudioVolumeChange: (value: number) => void
+  onAudioFileChange: (file: string | null) => void
   onStartStream: () => void
   onStopStream: () => void
 }
@@ -211,11 +225,13 @@ export function StreamConfiguration({
   bitrate,
   audioEnabled,
   audioVolume,
+  audioFile,
   onStreamKeyChange,
   onRtmpUrlChange,
   onBitrateChange,
   onAudioEnabledChange,
   onAudioVolumeChange,
+  onAudioFileChange,
   onStartStream,
   onStopStream,
 }: StreamConfigProps) {
@@ -247,8 +263,10 @@ export function StreamConfiguration({
       <AudioOverlayCard
         audioEnabled={audioEnabled}
         audioVolume={audioVolume}
+        audioFile={audioFile}
         onAudioEnabledChange={onAudioEnabledChange}
         onAudioVolumeChange={onAudioVolumeChange}
+        onAudioFileChange={onAudioFileChange}
       />
 
       {/* Stream Settings */}

@@ -476,20 +476,23 @@ app.post('/upload-from-url', async (req, res) => {
 const audioUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
-      // Store in public directory
-      const audioDir = path.join(__dirname, 'public');
+      // Store in public/audio directory for better organization
+      const audioDir = path.join(__dirname, 'public', 'audio');
       if (!fs.existsSync(audioDir)) {
         fs.mkdirSync(audioDir, { recursive: true });
       }
       cb(null, audioDir);
     },
     filename: (req, file, cb) => {
-      // Always save as rain.mp3 to replace existing
-      cb(null, 'rain.mp3');
+      // Sanitize and timestamp
+      const ext = path.extname(file.originalname);
+      const basename = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = `${basename}_${Date.now()}${ext}`;
+      cb(null, filename);
     }
   }),
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB max for audio
+    fileSize: 500 * 1024 * 1024, // 500MB max
   },
   fileFilter: (req, file, cb) => {
     const allowedMimes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/x-wav', 'audio/aac'];
@@ -507,19 +510,16 @@ app.post('/upload-audio', audioUpload.single('audio'), async (req, res) => {
       return res.status(400).json({ error: 'No audio file provided' });
     }
 
-    const { originalname, size } = req.file;
-    console.log(`🎵 Received audio upload: ${originalname}`);
+    const { filename, originalname, size } = req.file;
+    console.log(`🎵 Received audio upload: ${originalname} -> ${filename}`);
     console.log(`📦 Size: ${(size / 1024 / 1024).toFixed(2)} MB`);
-
-    // If stream is currently running, it will use the new audio on next restart
-    console.log(`✅ Audio file replaced: rain.mp3`);
 
     res.json({
       success: true,
-      filename: 'rain.mp3',
+      filename: filename, // Return the actual filename
       originalName: originalname,
       size: `${(size / 1024 / 1024).toFixed(2)} MB`,
-      message: 'Background audio updated. Changes will apply on stream restart.'
+      message: 'Background audio uploaded successfully.'
     });
 
   } catch (error) {
@@ -929,32 +929,75 @@ function startMasterStream(config) {
   // We MUST re-encode because concatenating MPEG-TS pipes resets timestamps, 
   // and -c copy would pass those resets to RTMP, breaking the stream.
 
-  const masterArgs = [
-    '-fflags', '+genpts+discardcorrupt', // fix timestamps
-    // '-re',          // REMOVED: Redundant (Feeder handles timing) and causes issues with pipe buffering
-    '-f', 'mpegts',
-    '-i', 'pipe:0',    // Read from stdin
+  // Audio Overlay Setup
+  const audioEnabled = config.audio_overlay_enabled !== false; // Default true
+  const audioVolumeRaw = config.audio_volume || 35;
+  const audioFile = config.audio_file || 'rain.mp3'; // Default to rain.mp3
 
-    // Video Encoding
+  let audioInputPath = null;
+  // Check specific audio directory first
+  const audioDirFile = path.join(__dirname, 'public', 'audio', audioFile);
+  const publicDirFile = path.join(__dirname, 'public', audioFile); // Backwards compatibility
+
+  if (fs.existsSync(audioDirFile)) {
+    audioInputPath = audioDirFile;
+  } else if (fs.existsSync(publicDirFile)) {
+    audioInputPath = publicDirFile;
+  }
+
+  const masterArgs = [
+    '-fflags', '+genpts+discardcorrupt',
+    '-f', 'mpegts',
+    '-i', 'pipe:0' // Input 0: Video Stream from Feeder
+  ];
+
+  // Logic: Add background audio input if enabled and exists
+  if (audioEnabled && audioInputPath) {
+    console.log(`🎵 Background Audio: Enabled (${audioVolumeRaw}%) - ${path.basename(audioInputPath)}`);
+    masterArgs.push('-stream_loop', '-1', '-i', audioInputPath); // Input 1: Background Loop
+  } else {
+    console.log('🔇 Background Audio: Disabled or not found');
+  }
+
+  // Video Encoding (Basic)
+  const videoEncodingArgs = [
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-tune', 'zerolatency',
     '-b:v', `${vBitrate}k`,
     '-maxrate', `${vBitrate}k`,
     '-bufsize', `${vBitrate * 2}k`,
-    '-g', '60',        // Keyframe interval (2s)
-    '-pix_fmt', 'yuv420p',
+    '-g', '60',
+    '-pix_fmt', 'yuv420p'
+  ];
+  masterArgs.push(...videoEncodingArgs);
 
-    // Audio Encoding
+  // Audio Encoding & Mixing
+  if (audioEnabled && audioInputPath) {
+    // Calculate volume 0.0 - 1.0 (Assume video is 1.0)
+    const vol = (audioVolumeRaw / 100).toFixed(2);
+
+    // Mix Input 0 (Stream) and Input 1 (Background)
+    masterArgs.push(
+      '-filter_complex', `[0:a]volume=1.0[a1];[1:a]volume=${vol}[a2];[a1][a2]amix=inputs=2:duration=first[aout]`,
+      '-map', '0:v',   // Map Video from Input 0
+      '-map', '[aout]' // Map Mixed Audio
+    );
+  } else {
+    // Pass through audio from Input 0
+    // Note: We still re-encode AAC to ensure consistency
+    // No mapping needed, FFmpeg picks 0:v and 0:a by default for single input
+  }
+
+  // Common Audio Encoding Settings
+  masterArgs.push(
     '-c:a', 'aac',
     '-b:a', '128k',
     '-ar', '44100',
     '-ac', '2',
-
-    // Output
     '-f', 'flv',
     outputUrl
-  ];
+  );
 
   console.log('🚀 Master Command: ffmpeg ' + masterArgs.join(' '));
 

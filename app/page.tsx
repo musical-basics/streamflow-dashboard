@@ -22,6 +22,8 @@ export default function Dashboard() {
   const [configId, setConfigId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
+  const [audioFile, setAudioFile] = useState<string | null>(null) // State for audio filename
+
   // Load configuration from Supabase on mount
   useEffect(() => {
     async function loadConfig() {
@@ -49,6 +51,7 @@ export default function Dashboard() {
       setBitrate(data.bitrate || 8000)
       setAudioEnabled(data.audio_overlay_enabled ?? true)
       setAudioVolume(data.audio_volume || 35)
+      setAudioFile(data.audio_file || null) // Load audio file
       setVideos(data.playlist || [])
       setIsLive(data.is_active || false)
       setIsLoading(false)
@@ -92,6 +95,7 @@ export default function Dashboard() {
         bitrate,
         audio_overlay_enabled: audioEnabled,
         audio_volume: audioVolume,
+        audio_file: audioFile, // Save audio file
         playlist: videos,
         updated_at: new Date().toISOString(),
       })
@@ -237,11 +241,13 @@ export default function Dashboard() {
               bitrate={bitrate}
               audioEnabled={audioEnabled}
               audioVolume={audioVolume}
+              audioFile={audioFile}
               onStreamKeyChange={setStreamKey}
               onRtmpUrlChange={setRtmpUrl}
               onBitrateChange={setBitrate}
               onAudioEnabledChange={setAudioEnabled}
               onAudioVolumeChange={setAudioVolume}
+              onAudioFileChange={setAudioFile}
               onStartStream={handleStartStream}
               onStopStream={handleStopStream}
             />
