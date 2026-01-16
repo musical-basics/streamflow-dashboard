@@ -698,6 +698,7 @@ let currentPlaylist = [];
 let currentIndex = 0;
 let skipToTarget = false; // Flag to indicate manual skip
 let masterStdin = null; // Stream to write video data to
+let lastPlayedVideoId = null; // Track last played video for smart restarts
 
 /**
  * Fetch stream configuration from Supabase
@@ -1067,7 +1068,23 @@ async function pollStreamConfig() {
         config.playlist = validPlaylist;
       }
       currentPlaylist = config.playlist;
+
+      // Smart Restart Logic: Try to find where we left off
       currentIndex = 0;
+      if (lastPlayedVideoId) {
+        console.log(`🧐 Smart Restart: Looking for last played video ID ${lastPlayedVideoId}...`);
+        const foundIndex = currentPlaylist.findIndex(v => v.id === lastPlayedVideoId);
+        if (foundIndex !== -1) {
+          // Found it! Start from the NEXT one
+          const nextIndex = (foundIndex + 1) % currentPlaylist.length;
+          console.log(`📍 Found last video at index ${foundIndex}. Resuming from index ${nextIndex} ("${currentPlaylist[nextIndex].title}")`);
+          currentIndex = nextIndex;
+        } else {
+          console.log('⚠️ Last played video not found in new playlist. Starting from beginning.');
+        }
+        lastPlayedVideoId = null; // Reset
+      }
+
       startMasterStream(config);
       lastConfig = config;
     }
@@ -1079,6 +1096,30 @@ async function pollStreamConfig() {
 
     // 2. Handle Runtime Updates (if streaming)
     if (isStreaming && config.is_active) {
+      // CHECK FOR CRITICAL CHANGES (Stream Key, URL, Audio)
+      // If these change, we MUST restart the master process
+      const criticalChanged =
+        config.stream_key !== lastConfig.stream_key ||
+        config.rtmp_url !== lastConfig.rtmp_url ||
+        config.audio_overlay_enabled !== lastConfig.audio_overlay_enabled ||
+        config.audio_volume !== lastConfig.audio_volume ||
+        config.audio_file !== lastConfig.audio_file;
+
+      if (criticalChanged) {
+        console.log('⚠️ Critical Configuration Changed (Key/URL/Audio) - Restarting Stream...');
+
+        // Save state before stopping
+        const currentVideo = currentPlaylist[currentIndex];
+        if (currentVideo) {
+          lastPlayedVideoId = currentVideo.id;
+          console.log(`💾 Saved resume state: Video ID ${lastPlayedVideoId} ("${currentVideo.title}")`);
+        }
+
+        stopStream();
+        // The next poll will pick it up as is_active=true but isStreaming=false and start fresh
+        return;
+      }
+
       // Check for Playlist Changes
       const oldJson = JSON.stringify(lastConfig?.playlist || []);
       const newJson = JSON.stringify(config.playlist || []);
