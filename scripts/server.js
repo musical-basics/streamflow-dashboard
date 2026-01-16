@@ -35,6 +35,7 @@ const THUMBNAILS_DIR = path.join(__dirname, 'public', 'thumbnails');
 const RAIN_AUDIO_PATH = path.join(__dirname, 'public', 'rain.mp3');
 const PLAYLIST_FILE = path.join(__dirname, 'list.txt');
 const POLL_INTERVAL = 10000; // 10 seconds
+const STATE_FILE = path.join(__dirname, 'stream_state.json');
 
 // =============================================================================
 // SUPABASE INITIALIZATION
@@ -698,7 +699,6 @@ let currentPlaylist = [];
 let currentIndex = 0;
 let skipToTarget = false; // Flag to indicate manual skip
 let masterStdin = null; // Stream to write video data to
-let lastPlayedVideoId = null; // Track last played video for smart restarts
 
 /**
  * Fetch stream configuration from Supabase
@@ -716,6 +716,32 @@ async function getStreamConfig() {
   }
 
   return data;
+}
+
+/**
+ * Save current stream state to file
+ */
+function saveStreamState(data) {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('⚠️ Failed to save stream state:', err.message);
+  }
+}
+
+/**
+ * Load stream state from file
+ */
+function loadStreamState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = fs.readFileSync(STATE_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('⚠️ Failed to load stream state:', err.message);
+  }
+  return null;
 }
 
 /**
@@ -782,6 +808,12 @@ function playNextVideo() {
 
   console.log(`\n🎵 DJ CUE: [${currentIndex + 1}/${currentPlaylist.length}] "${video.title}"`);
   console.log(`   File: ${path.basename(filePath)}`);
+
+  // PERSIST STATE: Save current video ID so we can resume if restarted
+  saveStreamState({
+    lastPlayedVideoId: video.id,
+    timestamp: Date.now()
+  });
 
   // Spawn Feeder Process
   // Convert MP4 to MPEG-TS and pipe to stdout
@@ -1069,11 +1101,14 @@ async function pollStreamConfig() {
       }
       currentPlaylist = config.playlist;
 
-      // Smart Restart Logic: Try to find where we left off
+      // Smart Restart Logic: Try to find where we left off (from FILE)
       currentIndex = 0;
-      if (lastPlayedVideoId) {
-        console.log(`🧐 Smart Restart: Looking for last played video ID ${lastPlayedVideoId}...`);
-        const foundIndex = currentPlaylist.findIndex(v => v.id === lastPlayedVideoId);
+      const savedState = loadStreamState();
+
+      if (savedState && savedState.lastPlayedVideoId) {
+        console.log(`🧐 Smart Restart: Looking for last played video ID ${savedState.lastPlayedVideoId}...`);
+        const foundIndex = currentPlaylist.findIndex(v => v.id === savedState.lastPlayedVideoId);
+
         if (foundIndex !== -1) {
           // Found it! Start from the NEXT one
           const nextIndex = (foundIndex + 1) % currentPlaylist.length;
@@ -1082,7 +1117,6 @@ async function pollStreamConfig() {
         } else {
           console.log('⚠️ Last played video not found in new playlist. Starting from beginning.');
         }
-        lastPlayedVideoId = null; // Reset
       }
 
       startMasterStream(config);
@@ -1109,11 +1143,7 @@ async function pollStreamConfig() {
         console.log('⚠️ Critical Configuration Changed (Key/URL/Audio) - Restarting Stream...');
 
         // Save state before stopping
-        const currentVideo = currentPlaylist[currentIndex];
-        if (currentVideo) {
-          lastPlayedVideoId = currentVideo.id;
-          console.log(`💾 Saved resume state: Video ID ${lastPlayedVideoId} ("${currentVideo.title}")`);
-        }
+        // No need to manually save state here, as it's saved every time a song starts
 
         stopStream();
         // The next poll will pick it up as is_active=true but isStreaming=false and start fresh
