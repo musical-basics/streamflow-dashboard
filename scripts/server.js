@@ -724,6 +724,7 @@ async function getStreamConfig() {
 function saveStreamState(data) {
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
+    // console.log('💾 Stream state saved:', data.lastPlayedVideoId); // verbose
   } catch (err) {
     console.error('⚠️ Failed to save stream state:', err.message);
   }
@@ -1044,6 +1045,26 @@ function startMasterStream(config) {
     const line = data.toString().trim();
     if (!line) return;
     if (line.includes('frame=') && line.includes('size=')) return; // Filter stats
+
+    // FILTER OUT METADATA SPAM (MP3/Video Details)
+    const lower = line.toLowerCase();
+    if (
+      lower.includes('metadata:') ||
+      lower.includes('title           :') ||
+      lower.includes('artist          :') ||
+      lower.includes('comment         :') ||
+      lower.includes('description     :') ||
+      lower.includes('album           :') ||
+      lower.includes('genre           :') ||
+      lower.includes('date            :') ||
+      lower.includes('encoder         :') ||
+      line.trim().startsWith('Stream #') ||
+      line.trim().startsWith('Duration:') ||
+      line.trim().startsWith('Side data:')
+    ) {
+      return;
+    }
+
     console.log(`[MASTER] ${line}`);
   });
 
