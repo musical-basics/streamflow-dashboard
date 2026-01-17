@@ -4,8 +4,16 @@ import type React from "react"
 import { useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Video, Trash2, GripVertical, Plus } from "lucide-react"
+import { Video, Trash2, GripVertical, Plus, Volume2 } from "lucide-react"
 import { VideoPickerModal } from "@/components/video-picker-modal"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Slider } from "@/components/ui/slider"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 export interface VideoItem {
   id: string
@@ -15,16 +23,18 @@ export interface VideoItem {
   url?: string
   filename?: string
   thumbnail_url?: string
+  volume?: number
 }
 
 interface PlaylistEditorProps {
   videos: VideoItem[]
   onReorder: (videos: VideoItem[]) => void
   onDelete: (id: string) => void
+  onUpdate: (id: string, updates: Partial<VideoItem>) => void
   onAddVideos?: (videos: VideoItem[]) => void
 }
 
-export function PlaylistEditor({ videos, onReorder, onDelete, onAddVideos }: PlaylistEditorProps) {
+export function PlaylistEditor({ videos, onReorder, onDelete, onUpdate, onAddVideos }: PlaylistEditorProps) {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const [showPicker, setShowPicker] = useState(false)
@@ -57,7 +67,8 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onAddVideos }: Pla
       duration: v.duration,
       thumbnail: v.thumbnail_url || `/thumbnails/${v.filename?.replace(/\.[^/.]+$/, '.jpg')}`,
       filename: v.filename,
-      url: `/videos/${v.filename}`
+      url: `/videos/${v.filename}`,
+      volume: 100 // Default volume
     }))
 
     if (onAddVideos) {
@@ -149,6 +160,53 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onAddVideos }: Pla
                   <p className="font-medium text-foreground truncate">{video.title}</p>
                   <p className="text-sm text-muted-foreground">{video.duration}</p>
                 </div>
+
+                {/* Volume Control */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 px-2 text-muted-foreground hover:text-foreground"
+                    >
+                      <Volume2 className="w-4 h-4 mr-1.5" />
+                      <span className="text-xs font-mono w-9 text-right inline-block">
+                        {video.volume ?? 100}%
+                      </span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80" side="left">
+                    <div className="grid gap-4">
+                      <div className="space-y-2">
+                        <h4 className="font-medium leading-none">Volume</h4>
+                        <p className="text-sm text-muted-foreground">
+                          Adjust playback volume for this track.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <Slider
+                          defaultValue={[video.volume ?? 100]}
+                          max={100}
+                          step={1}
+                          className="flex-1"
+                          onValueChange={(value) => onUpdate(video.id, { volume: value[0] })}
+                        />
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            value={video.volume ?? 100}
+                            onChange={(e) => {
+                              const val = Math.min(100, Math.max(0, parseInt(e.target.value) || 0))
+                              onUpdate(video.id, { volume: val })
+                            }}
+                            className="w-16 h-8 text-right"
+                          />
+                          <span className="text-sm text-muted-foreground">%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
 
                 {/* Remove from Playlist */}
                 <Button

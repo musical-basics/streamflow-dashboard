@@ -70,7 +70,13 @@ export default function Dashboard() {
 
   const handleAddVideos = (newVideos: VideoItem[]) => {
     console.log('Adding videos from library:', newVideos)
-    setVideos((prevVideos) => [...prevVideos, ...newVideos])
+    // Ensure new videos have volume set to 100
+    const videosWithVolume = newVideos.map(v => ({ ...v, volume: 100 }))
+    setVideos((prevVideos) => [...prevVideos, ...videosWithVolume])
+  }
+
+  const handleUpdateVideo = (id: string, updates: Partial<VideoItem>) => {
+    setVideos((videos) => videos.map((v) => (v.id === id ? { ...v, ...updates } : v)))
   }
 
   const handlePublish = async () => {
@@ -229,7 +235,13 @@ export default function Dashboard() {
           {/* Left Panel - Playlist Editor */}
           <div className="w-1/2 border-r border-border p-6 overflow-hidden flex flex-col">
             <NowPlaying isLive={isLive} />
-            <PlaylistEditor videos={videos} onReorder={handleReorder} onDelete={handleDelete} onAddVideos={handleAddVideos} />
+            <PlaylistEditor
+              videos={videos}
+              onReorder={handleReorder}
+              onDelete={handleDelete}
+              onUpdate={handleUpdateVideo}
+              onAddVideos={handleAddVideos}
+            />
           </div>
 
           {/* Right Panel - Stream Configuration */}
