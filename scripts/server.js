@@ -953,25 +953,20 @@ function startMasterStream(config) {
 
   console.log('');
   console.log('═══════════════════════════════════════════════════════════');
-  console.log('🎬 STARTING MASTER STREAM ENGINE');
+  console.log('🎬 STARTING MASTER STREAM ENGINE (STABLE MODE)');
   console.log('═══════════════════════════════════════════════════════════');
   console.log('📡 RTMP URL:', rtmp_url);
   console.log('📊 Bitrate:', vBitrate, 'kbps');
   console.log('');
 
-  // Master args: Read MPEG-TS from stdin, Re-encode to ensure continuous timestamps
-  // We MUST re-encode because concatenating MPEG-TS pipes resets timestamps, 
-  // and -c copy would pass those resets to RTMP, breaking the stream.
-
   // Audio Overlay Setup
   const audioEnabled = config.audio_overlay_enabled !== false; // Default true
   const audioVolumeRaw = config.audio_volume || 35;
-  const audioFile = config.audio_file || 'rain.mp3'; // Default to rain.mp3
+  const audioFile = config.audio_file || 'rain.mp3';
 
   let audioInputPath = null;
-  // Check specific audio directory first
   const audioDirFile = path.join(__dirname, 'public', 'audio', audioFile);
-  const publicDirFile = path.join(__dirname, 'public', audioFile); // Backwards compatibility
+  const publicDirFile = path.join(__dirname, 'public', audioFile);
 
   if (fs.existsSync(audioDirFile)) {
     audioInputPath = audioDirFile;
@@ -979,51 +974,46 @@ function startMasterStream(config) {
     audioInputPath = publicDirFile;
   }
 
+  // Master Input Args
   const masterArgs = [
-    '-fflags', '+genpts+discardcorrupt',
+    '-fflags', '+genpts+discardcorrupt', // Keep these: helps with timestamp fixes
+    '-thread_queue_size', '1024',        // Added: Buffers input data
     '-f', 'mpegts',
-    '-i', 'pipe:0' // Input 0: Video Stream from Feeder
+    '-i', 'pipe:0'
   ];
 
-  // Logic: Add background audio input if enabled and exists
   if (audioEnabled && audioInputPath) {
     console.log(`🎵 Background Audio: Enabled (${audioVolumeRaw}%) - ${path.basename(audioInputPath)}`);
-    masterArgs.push('-stream_loop', '-1', '-i', audioInputPath); // Input 1: Background Loop
+    masterArgs.push('-stream_loop', '-1', '-i', audioInputPath);
   } else {
     console.log('🔇 Background Audio: Disabled or not found');
   }
 
-  // Video Encoding (Basic)
+  // Video Encoding (STABILIZED)
   const videoEncodingArgs = [
     '-c:v', 'libx264',
     '-preset', 'veryfast',
-    '-tune', 'zerolatency',
+    // REMOVED: '-tune', 'zerolatency' -> This was causing the pink artifacts
     '-b:v', `${vBitrate}k`,
     '-maxrate', `${vBitrate}k`,
     '-bufsize', `${vBitrate * 2}k`,
-    '-g', '60',
-    '-pix_fmt', 'yuv420p'
+    '-g', '60',            // Keyframe every 2 seconds (Critical for YouTube)
+    '-pix_fmt', 'yuv420p',
+    '-max_muxing_queue_size', '4096' // Added: Prevents buffer overflows
   ];
   masterArgs.push(...videoEncodingArgs);
 
   // Audio Encoding & Mixing
   if (audioEnabled && audioInputPath) {
-    // Calculate volume 0.0 - 1.0 (Assume video is 1.0)
     const vol = (audioVolumeRaw / 100).toFixed(2);
-
-    // Mix Input 0 (Stream) and Input 1 (Background)
     masterArgs.push(
-      '-filter_complex', `[0:a]volume=1.0[a1];[1:a]volume=${vol}[a2];[a1][a2]amix=inputs=2:duration=first[aout]`,
-      '-map', '0:v',   // Map Video from Input 0
-      '-map', '[aout]' // Map Mixed Audio
+      '-filter_complex', `[0:a]volume=1.0[a1];[1:a]volume=${vol}[a2];[a1][a2]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
+      '-map', '0:v',
+      '-map', '[aout]'
     );
-  } else {
-    // Pass through audio from Input 0
-    // Note: We still re-encode AAC to ensure consistency
-    // No mapping needed, FFmpeg picks 0:v and 0:a by default for single input
   }
 
-  // Common Audio Encoding Settings
+  // Output Settings
   masterArgs.push(
     '-c:a', 'aac',
     '-b:a', '128k',
@@ -1036,34 +1026,17 @@ function startMasterStream(config) {
   console.log('🚀 Master Command: ffmpeg ' + masterArgs.join(' '));
 
   masterFfmpeg = spawn('ffmpeg', masterArgs);
-  masterStdin = masterFfmpeg.stdin; // We will pipe into this
+  masterStdin = masterFfmpeg.stdin;
 
   isStreaming = true;
 
   masterFfmpeg.stderr.on('data', (data) => {
-    // Log master status (maybe filter spam)
     const line = data.toString().trim();
     if (!line) return;
-    if (line.includes('frame=') && line.includes('size=')) return; // Filter stats
+    if (line.includes('frame=') && line.includes('size=')) return;
 
-    // FILTER OUT METADATA SPAM (MP3/Video Details)
-    const lower = line.toLowerCase();
-    if (
-      lower.includes('metadata:') ||
-      lower.includes('title           :') ||
-      lower.includes('artist          :') ||
-      lower.includes('comment         :') ||
-      lower.includes('description     :') ||
-      lower.includes('album           :') ||
-      lower.includes('genre           :') ||
-      lower.includes('date            :') ||
-      lower.includes('encoder         :') ||
-      line.trim().startsWith('Stream #') ||
-      line.trim().startsWith('Duration:') ||
-      line.trim().startsWith('Side data:')
-    ) {
-      return;
-    }
+    // Filter spam logs
+    if (line.includes('metadata:') || line.includes('Stream #')) return;
 
     console.log(`[MASTER] ${line}`);
   });
@@ -1073,14 +1046,12 @@ function startMasterStream(config) {
     masterFfmpeg = null;
     masterStdin = null;
     isStreaming = false;
-    // If master dies, kill feeder too
     if (currentFeederProcess) {
       currentFeederProcess.kill();
       currentFeederProcess = null;
     }
   });
 
-  // Start feeding video !
   playNextVideo();
 }
 

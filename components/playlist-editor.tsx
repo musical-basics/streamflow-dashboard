@@ -93,7 +93,7 @@ export function PlaylistEditor({ videos, onReorder, onDelete, onUpdate, onAddVid
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col flex-1 min-h-0">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-foreground">Playlist Editor</h3>
         <span className="text-sm text-muted-foreground">{videos.length} videos</span>
