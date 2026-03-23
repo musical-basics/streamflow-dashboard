@@ -989,17 +989,10 @@ function startMasterStream(config) {
     console.log('🔇 Background Audio: Disabled or not found');
   }
 
-  // Video Encoding (STABILIZED)
+  // The Zero-CPU Multi-Tenant Way
   const videoEncodingArgs = [
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    // REMOVED: '-tune', 'zerolatency' -> This was causing the pink artifacts
-    '-b:v', `${vBitrate}k`,
-    '-maxrate', `${vBitrate}k`,
-    '-bufsize', `${vBitrate * 2}k`,
-    '-g', '60',            // Keyframe every 2 seconds (Critical for YouTube)
-    '-pix_fmt', 'yuv420p',
-    '-max_muxing_queue_size', '4096' // Added: Prevents buffer overflows
+    '-c:v', 'copy', // MAGIC BULLET: Copy the pre-normalized video frames directly
+    '-max_muxing_queue_size', '4096' 
   ];
   masterArgs.push(...videoEncodingArgs);
 
