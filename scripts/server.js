@@ -938,10 +938,13 @@ function startMasterStream(config) {
   if (masterFfmpeg) return;
 
   const {
-    rtmp_url,
     stream_key,
     bitrate
   } = config;
+
+  // RTMP_URL_OVERRIDE lets a specific server target a different YouTube ingest
+  // (e.g. primary vs backup) than the shared Supabase config specifies.
+  const rtmp_url = process.env.RTMP_URL_OVERRIDE || config.rtmp_url;
 
   if (!rtmp_url || !stream_key) {
     console.error('❌ Missing RTMP URL or stream key');
