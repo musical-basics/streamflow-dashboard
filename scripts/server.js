@@ -699,6 +699,7 @@ let currentPlaylist = [];
 let currentIndex = 0;
 let skipToTarget = false; // Flag to indicate manual skip
 let masterStdin = null; // Stream to write video data to
+let masterStartedAt = 0; // Wall-clock ms when the master process began, used to keep feeder timestamps monotonic
 
 /**
  * Fetch stream configuration from Supabase
@@ -818,11 +819,29 @@ function playNextVideo() {
 
   // Spawn Feeder Process
   // Convert MP4 to MPEG-TS and pipe to stdout
+  //
+  // Each feeder is a separate ffmpeg process, so its timestamps would restart near
+  // zero for every track. The master would then see DTS jump backwards at each
+  // handoff and drop the packet, producing a visible hitch between pieces. Offsetting
+  // each feeder by the elapsed wall-clock keeps one continuous timeline across tracks.
+  // Wall-clock (rather than summed durations) stays correct when a track is skipped
+  // or a feeder dies part-way through, and can never run backwards.
+  //
+  // Caveat: MPEG-TS timestamps are 33 bits at 90kHz, so they wrap after 26.5h of
+  // master uptime. ffmpeg's demuxer corrects for that wrap, but if a hitch ever shows
+  // up roughly once a day this is the first place to look.
+  const tsOffsetSeconds = masterStartedAt
+    ? Math.max(0, (Date.now() - masterStartedAt) / 1000)
+    : 0;
+
   const feederArgs = [
     '-re',                // Read at native framerate (crucial for streaming)
     '-i', filePath,
     '-c', 'copy',         // Copy streams (fast, requires normalization)
     '-bsf:v', 'h264_mp4toannexb', // Convert to Annex B bitstream for MPEG-TS
+    '-muxdelay', '0',     // No mux buffering, so the offset below lands exactly
+    '-muxpreload', '0',
+    '-output_ts_offset', tsOffsetSeconds.toFixed(3), // toFixed keeps the leading zero ffmpeg requires
     '-f', 'mpegts',       // Output formatted as MPEG-TS
     'pipe:1'              // Write to stdout
   ];
@@ -979,7 +998,11 @@ function startMasterStream(config) {
 
   // Master Input Args
   const masterArgs = [
-    '-fflags', '+genpts+discardcorrupt', // Keep these: helps with timestamp fixes
+    // discardcorrupt is deliberately absent: every feeder starts a fresh MPEG-TS
+    // stream, so its continuity counters restart and the demuxer flags the first
+    // packet of each track as corrupt. The data is fine, and discarding it is what
+    // put a hole in the stream at every transition.
+    '-fflags', '+genpts',
     '-thread_queue_size', '1024',        // Added: Buffers input data
     '-f', 'mpegts',
     '-i', 'pipe:0'
@@ -992,10 +1015,19 @@ function startMasterStream(config) {
     console.log('🔇 Background Audio: Disabled or not found');
   }
 
-  // The Zero-CPU Multi-Tenant Way
+  // Re-encoding here (rather than '-c:v copy') is what lets the master rebuild a
+  // clean, evenly-keyframed timeline out of the separately-encoded feeder segments.
+  // Copying passes each feeder's timing straight through to YouTube instead.
   const videoEncodingArgs = [
-    '-c:v', 'copy', // MAGIC BULLET: Copy the pre-normalized video frames directly
-    '-max_muxing_queue_size', '4096' 
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    // REMOVED: '-tune', 'zerolatency' -> This was causing the pink artifacts
+    '-b:v', `${vBitrate}k`,
+    '-maxrate', `${vBitrate}k`,
+    '-bufsize', `${vBitrate * 2}k`,
+    '-g', '60',            // Keyframe every 2 seconds (Critical for YouTube)
+    '-pix_fmt', 'yuv420p',
+    '-max_muxing_queue_size', '4096' // Added: Prevents buffer overflows
   ];
   masterArgs.push(...videoEncodingArgs);
 
@@ -1023,6 +1055,7 @@ function startMasterStream(config) {
 
   masterFfmpeg = spawn('ffmpeg', masterArgs);
   masterStdin = masterFfmpeg.stdin;
+  masterStartedAt = Date.now(); // Anchor for the feeder timestamp offsets
 
   isStreaming = true;
 
