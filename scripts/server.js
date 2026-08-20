@@ -17,7 +17,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { createClient } from '@supabase/supabase-js';
 import ffmpeg from 'fluent-ffmpeg';
 
@@ -36,6 +36,9 @@ const RAIN_AUDIO_PATH = path.join(__dirname, 'public', 'rain.mp3');
 const PLAYLIST_FILE = path.join(__dirname, 'list.txt');
 const POLL_INTERVAL = 10000; // 10 seconds
 const STATE_FILE = path.join(__dirname, 'stream_state.json');
+// On restart, only pick an interrupted track back up if this much of it is still left;
+// with less remaining it is tidier to move on to the next one.
+const RESUME_MIN_REMAINING_SECONDS = 20;
 
 // =============================================================================
 // SUPABASE INITIALIZATION
@@ -700,6 +703,7 @@ let currentIndex = 0;
 let skipToTarget = false; // Flag to indicate manual skip
 let masterStdin = null; // Stream to write video data to
 let masterStartedAt = 0; // Wall-clock ms when the master process began, used to keep feeder timestamps monotonic
+let pendingSeekSeconds = 0; // Set on restart to resume an interrupted track where it left off
 
 /**
  * Fetch stream configuration from Supabase
@@ -799,6 +803,11 @@ function playNextVideo() {
   const video = currentPlaylist[currentIndex];
   // ... (rest of playNextVideo remains similar until close handler)
 
+  // A pending resume seek belongs to this cue alone. Consume it up front so it can
+  // never leak onto a later track if this one turns out to be unplayable.
+  const seekSeconds = pendingSeekSeconds;
+  pendingSeekSeconds = 0;
+
   const filePath = getVideoPath(video);
 
   if (!filePath || !fs.existsSync(filePath)) {
@@ -836,6 +845,16 @@ function playNextVideo() {
 
   const feederArgs = [
     '-re',                // Read at native framerate (crucial for streaming)
+  ];
+
+  if (seekSeconds > 0) {
+    // Seeking before -i keeps the copy fast; it lands on the nearest keyframe at or
+    // before this point, so playback repeats at most one ~2s GOP.
+    console.log(`   ⏩ Picking up where the restart interrupted it: ${formatClock(seekSeconds)}`);
+    feederArgs.push('-ss', seekSeconds.toFixed(3));
+  }
+
+  feederArgs.push(
     '-i', filePath,
     '-c', 'copy',         // Copy streams (fast, requires normalization)
     '-bsf:v', 'h264_mp4toannexb', // Convert to Annex B bitstream for MPEG-TS
@@ -844,7 +863,7 @@ function playNextVideo() {
     '-output_ts_offset', tsOffsetSeconds.toFixed(3), // toFixed keeps the leading zero ffmpeg requires
     '-f', 'mpegts',       // Output formatted as MPEG-TS
     'pipe:1'              // Write to stdout
-  ];
+  );
 
   currentFeederProcess = spawn('ffmpeg', feederArgs);
 
@@ -883,6 +902,34 @@ function playNextVideo() {
       }
     }
   });
+}
+
+/**
+ * Duration of a media file in seconds, or 0 if it cannot be determined.
+ * Synchronous because the only caller runs once, during restart, before streaming begins.
+ */
+function getDurationSeconds(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return 0;
+  try {
+    const out = execFileSync(
+      'ffprobe',
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath],
+      { encoding: 'utf8', timeout: 10000 }
+    );
+    const seconds = parseFloat(out.trim());
+    return Number.isFinite(seconds) ? seconds : 0;
+  } catch (err) {
+    console.error(`⚠️ Could not read duration of ${path.basename(filePath)}:`, err.message);
+    return 0;
+  }
+}
+
+/**
+ * Format seconds as m:ss for logging
+ */
+function formatClock(seconds) {
+  const whole = Math.floor(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 }
 
 /**
@@ -1131,10 +1178,24 @@ async function pollStreamConfig() {
         const foundIndex = currentPlaylist.findIndex(v => v.id === savedState.lastPlayedVideoId);
 
         if (foundIndex !== -1) {
-          // Found it! Start from the NEXT one
-          const nextIndex = (foundIndex + 1) % currentPlaylist.length;
-          console.log(`📍 Found last video at index ${foundIndex}. Resuming from index ${nextIndex} ("${currentPlaylist[nextIndex].title}")`);
-          currentIndex = nextIndex;
+          // This used to jump straight to the next track, which meant every restart
+          // cut a piece off mid-performance for listeners. Pick the interrupted piece
+          // back up instead, and only move on when it had all but finished anyway.
+          const elapsed = savedState.timestamp
+            ? Math.max(0, (Date.now() - savedState.timestamp) / 1000)
+            : 0;
+          const duration = getDurationSeconds(getVideoPath(currentPlaylist[foundIndex]));
+          const remaining = duration ? duration - elapsed : 0;
+
+          if (remaining > RESUME_MIN_REMAINING_SECONDS) {
+            currentIndex = foundIndex;
+            pendingSeekSeconds = elapsed;
+            console.log(`📍 Resuming "${currentPlaylist[foundIndex].title}" at ${formatClock(elapsed)} of ${formatClock(duration)} (${formatClock(remaining)} left)`);
+          } else {
+            const nextIndex = (foundIndex + 1) % currentPlaylist.length;
+            currentIndex = nextIndex;
+            console.log(`📍 "${currentPlaylist[foundIndex].title}" had already finished. Resuming from index ${nextIndex} ("${currentPlaylist[nextIndex].title}")`);
+          }
         } else {
           console.log('⚠️ Last played video not found in new playlist. Starting from beginning.');
         }
