@@ -704,6 +704,7 @@ let skipToTarget = false; // Flag to indicate manual skip
 let masterStdin = null; // Stream to write video data to
 let masterStartedAt = 0; // Wall-clock ms when the master process began, used to keep feeder timestamps monotonic
 let pendingSeekSeconds = 0; // Set on restart to resume an interrupted track where it left off
+let masterGeneration = 0; // Bumped per master process, so feeders from an old one can be spotted
 
 /**
  * Fetch stream configuration from Supabase
@@ -790,6 +791,15 @@ app.post('/control/skip', (req, res) => {
  */
 function playNextVideo() {
   if (!isStreaming || !masterStdin) return;
+
+  // Both feeders write into the master's single stdin, so a second one interleaves its
+  // packets with the first and broadcasts two pieces on top of each other. A duplicate
+  // cue can arrive from a retry timer racing the poll loop after a master restart;
+  // ignore it, because the running feeder will cue the next track when it finishes.
+  if (currentFeederProcess && currentFeederProcess.exitCode === null && currentFeederProcess.signalCode === null) {
+    console.log('⚠️ Duplicate cue ignored - a feeder is still running');
+    return;
+  }
   if (currentPlaylist.length === 0) {
     console.log('⚠️ Playlist empty. Waiting...');
     setTimeout(playNextVideo, 2000);
@@ -823,6 +833,9 @@ function playNextVideo() {
   // PERSIST STATE: Save current video ID so we can resume if restarted
   saveStreamState({
     lastPlayedVideoId: video.id,
+    // Where in the file this feeder started. Without it, resuming a track that was
+    // itself resumed would measure elapsed time from the seek point and rewind.
+    positionSeconds: seekSeconds,
     timestamp: Date.now()
   });
 
@@ -865,25 +878,40 @@ function playNextVideo() {
     'pipe:1'              // Write to stdout
   );
 
-  currentFeederProcess = spawn('ffmpeg', feederArgs);
+  const feeder = spawn('ffmpeg', feederArgs);
+  const feederGeneration = masterGeneration;
+  currentFeederProcess = feeder;
+
+  // A feeder outliving the master it fed belongs to a finished session. Acting on its
+  // callbacks would cue a track alongside the chain the new master already started.
+  const isStale = () => feederGeneration !== masterGeneration;
+  const releaseFeeder = () => {
+    if (currentFeederProcess === feeder) currentFeederProcess = null;
+  };
 
   // Pipe feeder stdout -> master stdin
-  currentFeederProcess.stdout.pipe(masterStdin, { end: false }); // Don't close master when feeder ends
+  feeder.stdout.pipe(masterStdin, { end: false }); // Don't close master when feeder ends
 
   // CRITICAL: We MUST consume stderr, otherwise the process hangs when the buffer fills (64KB)!
-  currentFeederProcess.stderr.on('data', (data) => {
+  feeder.stderr.on('data', (data) => {
     // Drain buffer
   });
 
-  currentFeederProcess.on('error', (err) => {
+  feeder.on('error', (err) => {
     console.error('❌ Feeder Error:', err);
-    // Try next
-    if (currentFeederProcess) currentFeederProcess.kill();
+    feeder.kill();
+    releaseFeeder();
+    if (isStale()) return;
     currentIndex++;
     setTimeout(playNextVideo, 1000);
   });
 
-  currentFeederProcess.on('close', (code) => {
+  feeder.on('close', (code) => {
+    releaseFeeder();
+    if (isStale()) {
+      console.log('⚠️ Ignoring a feeder left over from a previous stream session');
+      return;
+    }
     if (skipToTarget) {
       console.log('⏭️ Skipping to target video...');
       skipToTarget = false;
@@ -1103,6 +1131,7 @@ function startMasterStream(config) {
   masterFfmpeg = spawn('ffmpeg', masterArgs);
   masterStdin = masterFfmpeg.stdin;
   masterStartedAt = Date.now(); // Anchor for the feeder timestamp offsets
+  masterGeneration++;
 
   isStreaming = true;
 
@@ -1181,9 +1210,10 @@ async function pollStreamConfig() {
           // This used to jump straight to the next track, which meant every restart
           // cut a piece off mid-performance for listeners. Pick the interrupted piece
           // back up instead, and only move on when it had all but finished anyway.
-          const elapsed = savedState.timestamp
+          const playedFor = savedState.timestamp
             ? Math.max(0, (Date.now() - savedState.timestamp) / 1000)
             : 0;
+          const elapsed = (savedState.positionSeconds || 0) + playedFor;
           const duration = getDurationSeconds(getVideoPath(currentPlaylist[foundIndex]));
           const remaining = duration ? duration - elapsed : 0;
 
