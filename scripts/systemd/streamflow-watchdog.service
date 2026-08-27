@@ -1,0 +1,7 @@
+[Unit]
+Description=StreamFlow watchdog - detects and heals orphaned feeder processes
+After=streamflow.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/streamflow/watchdog.sh

@@ -1,0 +1,14 @@
+[Unit]
+Description=StreamFlow livestream backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/streamflow
+ExecStart=/usr/bin/node --env-file=/opt/streamflow/.env /opt/streamflow/server.js
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
