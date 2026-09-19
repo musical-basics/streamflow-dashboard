@@ -37,7 +37,7 @@ async function testConnection() {
     console.log(`🔑 Anon Key: ${supabaseAnonKey.slice(0, 20)}...\n`);
 
     // Create Supabase client
-    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, { db: { schema: 'streamflow' } });
 
     try {
         // Fetch the single row from stream_config table

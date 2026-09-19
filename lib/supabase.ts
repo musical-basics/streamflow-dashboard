@@ -9,4 +9,5 @@ if (!supabaseUrl || !supabaseAnonKey) {
     );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// StreamFlow's tables live in the `streamflow` schema of a shared Supabase project.
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, { db: { schema: 'streamflow' } });

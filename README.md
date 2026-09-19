@@ -85,6 +85,6 @@ pm2 monit             # Real-time monitoring dashboard
 
 - **Next.js Dashboard** — Frontend for managing videos, playlists, and stream controls
 - **Express VPS Server** (`scripts/server.js`) — Handles uploads, video normalization, and the broadcast engine
-- **Supabase** — Stores video metadata and stream configuration
+- **Supabase** — Stores video metadata and stream configuration (in the `streamflow` schema of a shared project)
 - **FFmpeg** — Normalizes uploads (1080p, 30fps, H.264) and streams via RTMP
 - **DJ Mode** — Playlist-based broadcasting with skip controls and smart restart

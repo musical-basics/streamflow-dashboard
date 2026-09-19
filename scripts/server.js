@@ -55,7 +55,8 @@ if (!supabaseUrl || !supabaseServiceKey) {
   process.exit(1);
 }
 
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+// StreamFlow's tables live in the `streamflow` schema of a shared Supabase project.
+const supabase = createClient(supabaseUrl, supabaseServiceKey, { db: { schema: 'streamflow' } });
 
 // =============================================================================
 // DIRECTORY SETUP
